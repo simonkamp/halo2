@@ -1,4 +1,4 @@
-use ff::Field;
+use ff::{Field, PrimeField};
 use plotters::{
     coord::Shift,
     prelude::{DrawingArea, DrawingAreaErrorKind, DrawingBackend},
@@ -8,7 +8,7 @@ use std::ops::Range;
 
 use crate::{
     circuit::layouter::RegionColumn,
-    dev::cost::Layout,
+    dev::{cost::Layout, Region},
     plonk::{Any, Circuit, Column, ConstraintSystem, FloorPlanner},
 };
 
@@ -82,7 +82,7 @@ impl CircuitLayout {
     }
 
     /// Renders the given circuit on the given drawing area.
-    pub fn render<F: Field, ConcreteCircuit: Circuit<F>, DB: DrawingBackend>(
+    pub fn render<F: PrimeField, ConcreteCircuit: Circuit<F>, DB: DrawingBackend>(
         self,
         k: u32,
         circuit: &ConcreteCircuit,
@@ -95,7 +95,7 @@ impl CircuitLayout {
         // Collect the layout details.
         let mut cs = ConstraintSystem::default();
         let config = ConcreteCircuit::configure(&mut cs);
-        let mut layout = Layout::new(k, n, cs.num_selectors);
+        let mut layout = Layout::new(k, n, cs.num_selectors, cs.dynamic_tables.len());
         ConcreteCircuit::FloorPlanner::synthesize(
             &mut layout,
             circuit,
@@ -106,6 +106,8 @@ impl CircuitLayout {
         let (cs, selector_polys) = cs.compress_selectors(layout.selectors);
         let non_selector_fixed_columns = cs.num_fixed_columns - selector_polys.len();
 
+        let (cs, _tag_polys) = cs.compress_dynamic_table_tags(layout.dynamic_tables.clone());
+
         // Figure out what order to render the columns in.
         // TODO: For now, just render them in the order they were configured.
         let total_columns = cs.num_instance_columns + cs.num_advice_columns + cs.num_fixed_columns;
@@ -113,6 +115,7 @@ impl CircuitLayout {
             let column: Column<Any> = match column {
                 RegionColumn::Column(col) => col,
                 RegionColumn::Selector(selector) => cs.selector_map[selector.0].into(),
+                RegionColumn::TableTag(tag_col) => cs.dynamic_table_tag_map[tag_col.index()].into(),
             };
             column.index()
                 + match column.column_type() {

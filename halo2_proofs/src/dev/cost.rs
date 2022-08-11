@@ -14,8 +14,8 @@ use group::prime::PrimeGroup;
 use crate::{
     circuit::{layouter::RegionColumn, Value},
     plonk::{
-        Advice, Any, Assigned, Assignment, Circuit, Column, ConstraintSystem, Error, Fixed,
-        FloorPlanner, Instance, Selector,
+        Advice, Any, Assigned, Assignment, Circuit, Column, ConstraintSystem, DynamicTable, Error,
+        Fixed, FloorPlanner, Instance, Selector,
     },
     poly::Rotation,
 };
@@ -90,11 +90,13 @@ pub(crate) struct Layout {
     pub(crate) equality: Vec<(Column<Any>, usize, Column<Any>, usize)>,
     /// Selector assignments used for optimization pass
     pub(crate) selectors: Vec<Vec<bool>>,
+    /// A map between DynamicTable.index, and rows included.
+    pub(crate) dynamic_tables: Vec<Vec<bool>>,
 }
 
 impl Layout {
     /// Creates a empty layout
-    pub fn new(k: u32, n: usize, num_selectors: usize) -> Self {
+    pub fn new(k: u32, n: usize, num_selectors: usize, num_dynamic_tables: usize) -> Self {
         Layout {
             k,
             regions: vec![],
@@ -108,6 +110,7 @@ impl Layout {
             equality: vec![],
             /// Selector assignments used for optimization pass
             selectors: vec![vec![false; n]; num_selectors],
+            dynamic_tables: vec![vec![false; n]; num_dynamic_tables],
         }
     }
 
@@ -180,6 +183,16 @@ impl<F: Field> Assignment<F> for Layout {
         }
 
         self.update((*selector).into(), row);
+        Ok(())
+    }
+
+    fn add_row_to_table(&mut self, table: &DynamicTable, row: usize) -> Result<(), Error> {
+        self.dynamic_tables[table.index.index()][row] = true;
+
+        for column in table.columns.iter() {
+            self.update((*column).into(), row);
+        }
+
         Ok(())
     }
 
@@ -262,7 +275,7 @@ impl<G: PrimeGroup, ConcreteCircuit: Circuit<G::Scalar>> CircuitCost<G, Concrete
         // Collect the layout details.
         let mut cs = ConstraintSystem::default();
         let config = ConcreteCircuit::configure(&mut cs);
-        let mut layout = Layout::new(k, 1 << k, cs.num_selectors);
+        let mut layout = Layout::new(k, 1 << k, cs.num_selectors, cs.dynamic_tables.len());
         ConcreteCircuit::FloorPlanner::synthesize(
             &mut layout,
             circuit,
@@ -271,6 +284,7 @@ impl<G: PrimeGroup, ConcreteCircuit: Circuit<G::Scalar>> CircuitCost<G, Concrete
         )
         .unwrap();
         let (cs, _) = cs.compress_selectors(layout.selectors);
+        let (cs, _) = cs.compress_dynamic_table_tags(layout.dynamic_tables);
 
         assert!((1 << k) >= cs.minimum_rows());
 

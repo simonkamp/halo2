@@ -4,7 +4,9 @@ use std::{fmt, marker::PhantomData};
 
 use ff::Field;
 
-use crate::plonk::{Advice, Any, Assigned, Column, Error, Fixed, Instance, Selector, TableColumn};
+use crate::plonk::{
+    Advice, Any, Assigned, Column, DynamicTable, Error, Fixed, Instance, Selector, TableColumn,
+};
 
 mod value;
 pub use value::Value;
@@ -199,6 +201,15 @@ impl<'r, F: Field> Region<'r, F> {
     {
         self.region
             .enable_selector(&|| annotation().into(), selector, offset)
+    }
+
+    /// Includes a row at `offset` in this dynamic lookup table.
+    pub(crate) fn add_row_to_table(
+        &mut self,
+        table: &DynamicTable,
+        offset: usize,
+    ) -> Result<(), Error> {
+        self.region.add_to_lookup(table, offset)
     }
 
     /// Assign an advice column value (witness).
