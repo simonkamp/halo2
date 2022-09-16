@@ -14,8 +14,8 @@ use group::prime::PrimeGroup;
 use crate::{
     circuit::{layouter::RegionColumn, Value},
     plonk::{
-        Advice, Any, Assigned, Assignment, Circuit, Column, ConstraintSystem, DynamicTable, Error,
-        Fixed, FloorPlanner, Instance, Selector,
+        Advice, Any, Assigned, Assignment, Circuit, Column, ConstraintSystem, DynamicTable,
+        DynamicTableInfo, Error, Fixed, FloorPlanner, Instance, Selector,
     },
     poly::Rotation,
 };
@@ -91,12 +91,18 @@ pub(crate) struct Layout {
     /// Selector assignments used for optimization pass
     pub(crate) selectors: Vec<Vec<bool>>,
     /// A map between DynamicTable.index, and rows included.
-    pub(crate) dynamic_tables: Vec<Vec<bool>>,
+    pub(crate) dynamic_tables_assignments: Vec<Vec<bool>>,
+    pub(crate) dynamic_tables: Vec<DynamicTableInfo>,
 }
 
 impl Layout {
     /// Creates a empty layout
-    pub fn new(k: u32, n: usize, num_selectors: usize, num_dynamic_tables: usize) -> Self {
+    pub fn new(
+        k: u32,
+        n: usize,
+        num_selectors: usize,
+        dynamic_tables: Vec<DynamicTableInfo>,
+    ) -> Self {
         Layout {
             k,
             regions: vec![],
@@ -110,7 +116,8 @@ impl Layout {
             equality: vec![],
             /// Selector assignments used for optimization pass
             selectors: vec![vec![false; n]; num_selectors],
-            dynamic_tables: vec![vec![false; n]; num_dynamic_tables],
+            dynamic_tables_assignments: vec![vec![false; n]; dynamic_tables.len()],
+            dynamic_tables,
         }
     }
 
@@ -186,11 +193,14 @@ impl<F: Field> Assignment<F> for Layout {
         Ok(())
     }
 
-    fn add_row_to_table(&mut self, table: &DynamicTable, row: usize) -> Result<(), Error> {
-        self.dynamic_tables[table.index.index()][row] = true;
+    fn add_row_to_table(&mut self, table: DynamicTable, row: usize) -> Result<(), Error> {
+        self.dynamic_tables_assignments[table.index()][row] = true;
 
-        for column in table.columns.iter() {
-            self.update((*column).into(), row);
+        for col_index in 0..self.dynamic_tables[table.index()].columns.len() {
+            self.update(
+                (self.dynamic_tables[table.index()].columns[col_index]).into(),
+                row,
+            );
         }
 
         Ok(())
@@ -275,7 +285,7 @@ impl<G: PrimeGroup, ConcreteCircuit: Circuit<G::Scalar>> CircuitCost<G, Concrete
         // Collect the layout details.
         let mut cs = ConstraintSystem::default();
         let config = ConcreteCircuit::configure(&mut cs);
-        let mut layout = Layout::new(k, 1 << k, cs.num_selectors, cs.dynamic_tables.len());
+        let mut layout = Layout::new(k, 1 << k, cs.num_selectors, cs.dynamic_tables.clone());
         ConcreteCircuit::FloorPlanner::synthesize(
             &mut layout,
             circuit,
@@ -284,7 +294,7 @@ impl<G: PrimeGroup, ConcreteCircuit: Circuit<G::Scalar>> CircuitCost<G, Concrete
         )
         .unwrap();
         let (cs, _) = cs.compress_selectors(layout.selectors);
-        let (cs, _) = cs.compress_dynamic_table_tags(layout.dynamic_tables);
+        let (cs, _) = cs.compress_dynamic_table_tags(&layout.dynamic_tables_assignments);
 
         assert!((1 << k) >= cs.minimum_rows());
 
