@@ -1785,7 +1785,7 @@ mod tests {
 
                         DynamicTableMap {
                             selector: is_even,
-                            table_map: vec![(a.clone(), table_vals.into())],
+                            table_map: vec![(a, table_vals.into())],
                         }
                     });
 
@@ -1795,7 +1795,7 @@ mod tests {
 
                         DynamicTableMap {
                             selector: is_odd,
-                            table_map: vec![(a.clone(), table_vals.into())],
+                            table_map: vec![(a, table_vals.into())],
                         }
                     });
 
