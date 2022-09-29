@@ -1,14 +1,14 @@
 use ff::Field;
 
-use super::Expression;
+use super::{compression::UncompressedExpressions, Expression};
 
 pub(crate) mod prover;
 pub(crate) mod verifier;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Argument<F: Field> {
-    pub original_expressions: Vec<Expression<F>>,
-    pub permuted_expressions: Vec<Expression<F>>,
+    pub original_expressions: UncompressedExpressions<F>,
+    pub permuted_expressions: UncompressedExpressions<F>,
 }
 
 impl<F: Field> Argument<F> {
@@ -16,17 +16,18 @@ impl<F: Field> Argument<F> {
     ///
     /// `multiset_map` is a sequence of `(original, permuted)` tuples.
     pub fn new(multiset_map: Vec<(Expression<F>, Expression<F>)>) -> Self {
-        let (original_expressions, permuted_expressions) = multiset_map.into_iter().unzip();
+        let (original_expressions, permuted_expressions): (Vec<Expression<F>>, Vec<Expression<F>>) =
+            multiset_map.into_iter().unzip();
         Argument {
-            original_expressions,
-            permuted_expressions,
+            original_expressions: original_expressions.into(),
+            permuted_expressions: permuted_expressions.into(),
         }
     }
 
     pub(crate) fn required_degree(&self) -> usize {
         assert_eq!(
-            self.original_expressions.len(),
-            self.permuted_expressions.len()
+            self.original_expressions.0.len(),
+            self.permuted_expressions.0.len()
         );
 
         // The first value in the permutation poly should be one.
@@ -47,11 +48,11 @@ impl<F: Field> Argument<F> {
         // ) = 0
         //
         let mut original_degree = 1;
-        for expr in self.original_expressions.iter() {
+        for expr in self.original_expressions.0.iter() {
             original_degree = std::cmp::max(original_degree, expr.degree());
         }
         let mut permuted_degree = 1;
-        for expr in self.permuted_expressions.iter() {
+        for expr in self.permuted_expressions.0.iter() {
             permuted_degree = std::cmp::max(permuted_degree, expr.degree());
         }
 

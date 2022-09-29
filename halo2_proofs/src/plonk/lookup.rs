@@ -1,14 +1,17 @@
+use self::compression::UncompressedExpressions;
+
 use super::circuit::Expression;
 use ff::Field;
 
+pub(crate) mod compression;
 pub(crate) mod multiset_equality;
 pub(crate) mod prover;
 pub(crate) mod verifier;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Argument<F: Field> {
-    pub input_expressions: Vec<Expression<F>>,
-    pub table_expressions: Vec<Expression<F>>,
+    pub input_expressions: UncompressedExpressions<F>,
+    pub table_expressions: UncompressedExpressions<F>,
 }
 
 impl<F: Field> Argument<F> {
@@ -16,15 +19,19 @@ impl<F: Field> Argument<F> {
     ///
     /// `table_map` is a sequence of `(input, table)` tuples.
     pub fn new(table_map: Vec<(Expression<F>, Expression<F>)>) -> Self {
-        let (input_expressions, table_expressions) = table_map.into_iter().unzip();
+        let (input_expressions, table_expressions): (Vec<Expression<F>>, Vec<Expression<F>>) =
+            table_map.into_iter().unzip();
         Argument {
-            input_expressions,
-            table_expressions,
+            input_expressions: input_expressions.into(),
+            table_expressions: table_expressions.into(),
         }
     }
 
     pub(crate) fn required_degree(&self) -> usize {
-        assert_eq!(self.input_expressions.len(), self.table_expressions.len());
+        assert_eq!(
+            self.input_expressions.0.len(),
+            self.table_expressions.0.len()
+        );
 
         // The first value in the permutation poly should be one.
         // degree 2:
@@ -51,11 +58,11 @@ impl<F: Field> Argument<F> {
         // degree 3:
         // (1 - (l_last(X) + l_blind(X))) * (a′(X) − s′(X))⋅(a′(X) − a′(\omega^{-1} X)) = 0
         let mut input_degree = 1;
-        for expr in self.input_expressions.iter() {
+        for expr in self.input_expressions.0.iter() {
             input_degree = std::cmp::max(input_degree, expr.degree());
         }
         let mut table_degree = 1;
-        for expr in self.table_expressions.iter() {
+        for expr in self.table_expressions.0.iter() {
             table_degree = std::cmp::max(table_degree, expr.degree());
         }
 

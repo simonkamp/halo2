@@ -91,6 +91,7 @@ impl<E, B: Basis> AstLeaf<E, B> {
 /// - The references are then used to build up a [`Ast`] that represents the overall
 ///   operations to be applied to the polynomials.
 /// - Finally, we call [`Evaluator::evaluate`] passing in the [`Ast`].
+#[derive(Debug)]
 pub(crate) struct Evaluator<E, F: Field, B: Basis> {
     polys: Vec<Polynomial<F, B>>,
     _context: E,

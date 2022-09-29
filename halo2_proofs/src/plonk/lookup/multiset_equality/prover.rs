@@ -2,13 +2,15 @@ use std::ops::{Mul, MulAssign};
 
 use ff::{BatchInvert, Field};
 use group::Curve;
-use pasta_curves::arithmetic::{CurveAffine, FieldExt};
+use pasta_curves::arithmetic::CurveAffine;
 use rand_core::RngCore;
 
 use super::Argument;
 use crate::{
     arithmetic::{eval_polynomial, parallelize},
-    plonk::{ChallengeBeta, ChallengeTheta, ChallengeX, Error, Expression, ProvingKey},
+    plonk::{
+        lookup::compression::Context, ChallengeBeta, ChallengeTheta, ChallengeX, Error, ProvingKey,
+    },
     poly::{
         self,
         commitment::{Blind, Params},
@@ -20,10 +22,10 @@ use crate::{
 
 #[derive(Debug)]
 pub(in crate::plonk) struct Compressed<C: CurveAffine, Ev> {
-    original_cosets_compressed: poly::Ast<Ev, C::Scalar, ExtendedLagrangeCoeff>,
-    original_compressed: Polynomial<C::Scalar, LagrangeCoeff>,
-    permuted_cosets_compressed: poly::Ast<Ev, C::Scalar, ExtendedLagrangeCoeff>,
-    permuted_compressed: Polynomial<C::Scalar, LagrangeCoeff>,
+    original_cosets: poly::Ast<Ev, C::Scalar, ExtendedLagrangeCoeff>,
+    original: Polynomial<C::Scalar, LagrangeCoeff>,
+    permuted_cosets: poly::Ast<Ev, C::Scalar, ExtendedLagrangeCoeff>,
+    permuted: Polynomial<C::Scalar, LagrangeCoeff>,
 }
 
 #[derive(Debug)]
@@ -44,7 +46,7 @@ pub(in crate::plonk) struct Evaluated<C: CurveAffine> {
     constructed: Constructed<C>,
 }
 
-impl<F: FieldExt> Argument<F> {
+impl<F: ff::WithSmallOrderMulGroup<3>> Argument<F> {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::plonk) fn compress_expressions<
         'a,
@@ -67,95 +69,25 @@ impl<F: FieldExt> Argument<F> {
         C: CurveAffine<ScalarExt = F>,
         C::Curve: Mul<F, Output = C::Curve> + MulAssign<F>,
     {
-        // Closure to get values of expressions and compress them
-        let compress_expressions = |expressions: &[Expression<C::Scalar>]| {
-            // Values of expressions
-            let expression_values: Vec<_> = expressions
-                .iter()
-                .map(|expression| {
-                    expression.evaluate(
-                        &|scalar| poly::Ast::ConstantTerm(scalar),
-                        &|_| panic!("virtual selectors are removed during optimization"),
-                        &|query| {
-                            fixed_values[query.column_index]
-                                .with_rotation(query.rotation)
-                                .into()
-                        },
-                        &|query| {
-                            advice_values[query.column_index]
-                                .with_rotation(query.rotation)
-                                .into()
-                        },
-                        &|query| {
-                            instance_values[query.column_index]
-                                .with_rotation(query.rotation)
-                                .into()
-                        },
-                        &|a| -a,
-                        &|a, b| a + b,
-                        &|a, b| a * b,
-                        &|a, scalar| a * scalar,
-                    )
-                })
-                .collect();
-
-            let cosets: Vec<_> = expressions
-                .iter()
-                .map(|expression| {
-                    expression.evaluate(
-                        &|scalar| poly::Ast::ConstantTerm(scalar),
-                        &|_| panic!("virtual selectors are removed during optimization"),
-                        &|query| {
-                            fixed_cosets[query.column_index]
-                                .with_rotation(query.rotation)
-                                .into()
-                        },
-                        &|query| {
-                            advice_cosets[query.column_index]
-                                .with_rotation(query.rotation)
-                                .into()
-                        },
-                        &|query| {
-                            instance_cosets[query.column_index]
-                                .with_rotation(query.rotation)
-                                .into()
-                        },
-                        &|a| -a,
-                        &|a, b| a + b,
-                        &|a, b| a * b,
-                        &|a, scalar| a * scalar,
-                    )
-                })
-                .collect();
-
-            // Compressed version of expressions
-            let compressed_expressions = expression_values.iter().fold(
-                poly::Ast::ConstantTerm(C::Scalar::zero()),
-                |acc, expression| &(acc * *theta) + expression,
-            );
-
-            // Compressed version of cosets
-            let compressed_cosets = cosets.iter().fold(
-                poly::Ast::<_, _, ExtendedLagrangeCoeff>::ConstantTerm(C::Scalar::zero()),
-                |acc, eval| acc * poly::Ast::ConstantTerm(*theta) + eval.clone(),
-            );
-
-            (
-                compressed_cosets,
-                value_evaluator.evaluate(&compressed_expressions, domain),
-            )
+        let context = Context {
+            domain,
+            value_evaluator,
+            advice_values,
+            fixed_values,
+            instance_values,
+            advice_cosets,
+            fixed_cosets,
+            instance_cosets,
         };
 
-        let (original_cosets_compressed, original_compressed) =
-            compress_expressions(&self.original_expressions);
-        let (permuted_cosets_compressed, permuted_compressed) =
-            compress_expressions(&self.permuted_expressions);
+        let (original_cosets, original) = self.original_expressions.compress(theta, &context);
+        let (permuted_cosets, permuted) = self.permuted_expressions.compress(theta, &context);
 
         Compressed {
-            original_cosets_compressed,
-            original_compressed,
-            permuted_cosets_compressed,
-            permuted_compressed,
+            original_cosets,
+            original,
+            permuted_cosets,
+            permuted,
         }
     }
 }
@@ -183,14 +115,11 @@ impl<C: CurveAffine, Ev> Compressed<C, Ev> {
         // where a(X) is the compression of the original expressions in this multiset equality check,
         // a'(X) is the compression of the permuted expressions,
         // and i is the ith row of the expression.
-        let mut product = vec![C::Scalar::zero(); params.n as usize];
+        let mut product = vec![C::Scalar::ZERO; params.n as usize];
 
         // Denominator uses the permuted expression
         parallelize(&mut product, |product, start| {
-            for (product, permuted_value) in product
-                .iter_mut()
-                .zip(self.permuted_compressed[start..].iter())
-            {
+            for (product, permuted_value) in product.iter_mut().zip(self.permuted[start..].iter()) {
                 *product = *beta + permuted_value;
             }
         });
@@ -202,10 +131,7 @@ impl<C: CurveAffine, Ev> Compressed<C, Ev> {
         // Finish the computation of the entire fraction by computing the numerators
         // (\theta^{m-1} a_0(\omega^i) + \theta^{m-2} a_1(\omega^i) + ... + \theta a_{m-2}(\omega^i) + a_{m-1}(\omega^i) + \beta)
         parallelize(&mut product, |product, start| {
-            for (product, original_value) in product
-                .iter_mut()
-                .zip(self.original_compressed[start..].iter())
-            {
+            for (product, original_value) in product.iter_mut().zip(self.original[start..].iter()) {
                 *product *= &(*beta + original_value);
             }
         });
@@ -222,9 +148,9 @@ impl<C: CurveAffine, Ev> Compressed<C, Ev> {
 
         // Compute the evaluations of the lookup product polynomial
         // over our domain, starting with z[0] = 1
-        let z = std::iter::once(C::Scalar::one())
+        let z = std::iter::once(C::Scalar::ONE)
             .chain(product)
-            .scan(C::Scalar::one(), |state, cur| {
+            .scan(C::Scalar::ONE, |state, cur| {
                 *state *= &cur;
                 Some(*state)
             })
@@ -245,18 +171,18 @@ impl<C: CurveAffine, Ev> Compressed<C, Ev> {
             let u = (params.n as usize) - (blinding_factors + 1);
 
             // l_0(X) * (1 - z(X)) = 0
-            assert_eq!(z[0], C::Scalar::one());
+            assert_eq!(z[0], C::Scalar::ONE);
 
             // z(\omega X) (\theta^{m-1} a'_0(X) + ... + a'_{m-1}(X) + \beta)
             // - z(X) (\theta^{m-1} a_0(X) + ... + a_{m-1}(X) + \beta)
             for i in 0..u {
                 let mut left = z[i + 1];
-                let permuted_value = &self.permuted_compressed[i];
+                let permuted_value = &self.permuted[i];
 
                 left *= &(*beta + permuted_value);
 
                 let mut right = z[i];
-                let original_value = self.original_compressed[i];
+                let original_value = self.original[i];
 
                 right *= &(*beta + original_value);
 
@@ -266,7 +192,7 @@ impl<C: CurveAffine, Ev> Compressed<C, Ev> {
             // l_last(X) * (z(X)^2 - z(X)) = 0
             // Assertion will fail only when soundness is broken, in which
             // case this z[u] value will be zero. (bad!)
-            assert_eq!(z[u], C::Scalar::one());
+            assert_eq!(z[u], C::Scalar::ONE);
         }
 
         let product_blind = Blind(C::Scalar::random(rng));
@@ -323,12 +249,11 @@ impl<'a, C: CurveAffine, Ev: Copy + Send + Sync + 'a> Committed<C, Ev> {
                 // z(\omega X) (a'(X) + \beta)
                 let left: poly::Ast<_, _, _> = poly::Ast::<_, C::Scalar, _>::from(
                     self.product_coset.with_rotation(Rotation::next()),
-                ) * (compressed.permuted_cosets_compressed
-                    + beta.clone());
+                ) * (compressed.permuted_cosets + beta.clone());
 
                 //  z(X) (\theta^{m-1} a_0(X) + ... + a_{m-1}(X) + \beta)
-                let right: poly::Ast<_, _, _> = poly::Ast::from(self.product_coset)
-                    * (&compressed.original_cosets_compressed + &beta);
+                let right: poly::Ast<_, _, _> =
+                    poly::Ast::from(self.product_coset) * (&compressed.original_cosets + &beta);
 
                 Some((left - right) * active_rows)
             });

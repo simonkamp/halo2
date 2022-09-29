@@ -1365,8 +1365,9 @@ impl<F: Field> ConstraintSystem<F> {
         for expr in self.lookups.iter_mut().flat_map(|lookup| {
             lookup
                 .input_expressions
+                .0
                 .iter_mut()
-                .chain(lookup.table_expressions.iter_mut())
+                .chain(lookup.table_expressions.0.iter_mut())
         }) {
             replace_selectors(expr, &selector_replacements, true);
         }

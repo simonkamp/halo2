@@ -1,7 +1,5 @@
-use super::super::{
-    circuit::Expression, ChallengeBeta, ChallengeGamma, ChallengeTheta, ChallengeX, Error,
-    ProvingKey,
-};
+use super::super::{ChallengeBeta, ChallengeGamma, ChallengeTheta, ChallengeX, Error, ProvingKey};
+use super::compression::Context;
 use super::Argument;
 use crate::{
     arithmetic::{eval_polynomial, parallelize, CurveAffine},
@@ -102,92 +100,24 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
         C: CurveAffine<ScalarExt = F>,
         C::Curve: Mul<F, Output = C::Curve> + MulAssign<F>,
     {
-        // Closure to get values of expressions and compress them
-        let compress_expressions = |expressions: &[Expression<C::Scalar>]| {
-            // Values of input expressions involved in the lookup
-            let unpermuted_expressions: Vec<_> = expressions
-                .iter()
-                .map(|expression| {
-                    expression.evaluate(
-                        &|scalar| poly::Ast::ConstantTerm(scalar),
-                        &|_| panic!("virtual selectors are removed during optimization"),
-                        &|query| {
-                            fixed_values[query.column_index]
-                                .with_rotation(query.rotation)
-                                .into()
-                        },
-                        &|query| {
-                            advice_values[query.column_index]
-                                .with_rotation(query.rotation)
-                                .into()
-                        },
-                        &|query| {
-                            instance_values[query.column_index]
-                                .with_rotation(query.rotation)
-                                .into()
-                        },
-                        &|a| -a,
-                        &|a, b| a + b,
-                        &|a, b| a * b,
-                        &|a, scalar| a * scalar,
-                    )
-                })
-                .collect();
-
-            let unpermuted_cosets: Vec<_> = expressions
-                .iter()
-                .map(|expression| {
-                    expression.evaluate(
-                        &|scalar| poly::Ast::ConstantTerm(scalar),
-                        &|_| panic!("virtual selectors are removed during optimization"),
-                        &|query| {
-                            fixed_cosets[query.column_index]
-                                .with_rotation(query.rotation)
-                                .into()
-                        },
-                        &|query| {
-                            advice_cosets[query.column_index]
-                                .with_rotation(query.rotation)
-                                .into()
-                        },
-                        &|query| {
-                            instance_cosets[query.column_index]
-                                .with_rotation(query.rotation)
-                                .into()
-                        },
-                        &|a| -a,
-                        &|a, b| a + b,
-                        &|a, b| a * b,
-                        &|a, scalar| a * scalar,
-                    )
-                })
-                .collect();
-
-            // Compressed version of expressions
-            let compressed_expression = unpermuted_expressions.iter().fold(
-                poly::Ast::ConstantTerm(C::Scalar::ZERO),
-                |acc, expression| &(acc * *theta) + expression,
-            );
-
-            // Compressed version of cosets
-            let compressed_coset = unpermuted_cosets.iter().fold(
-                poly::Ast::<_, _, ExtendedLagrangeCoeff>::ConstantTerm(C::Scalar::ZERO),
-                |acc, eval| acc * poly::Ast::ConstantTerm(*theta) + eval.clone(),
-            );
-
-            (
-                compressed_coset,
-                value_evaluator.evaluate(&compressed_expression, domain),
-            )
+        let context = Context {
+            domain,
+            value_evaluator,
+            advice_values,
+            fixed_values,
+            instance_values,
+            advice_cosets,
+            fixed_cosets,
+            instance_cosets,
         };
 
         // Get values of input expressions involved in the lookup and compress them
         let (compressed_input_coset, compressed_input_expression) =
-            compress_expressions(&self.input_expressions);
+            self.input_expressions.compress(theta, &context);
 
         // Get values of table expressions involved in the lookup and compress them
         let (compressed_table_coset, compressed_table_expression) =
-            compress_expressions(&self.table_expressions);
+            self.table_expressions.compress(theta, &context);
 
         // Permute compressed (InputExpression, TableExpression) pair
         let (permuted_input_expression, permuted_table_expression) = permute_expression_pair::<C, _>(
