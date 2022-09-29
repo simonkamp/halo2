@@ -17,23 +17,23 @@ use crate::{
         multiopen::ProverQuery,
         Coeff, EvaluationDomain, ExtendedLagrangeCoeff, LagrangeCoeff, Polynomial, Rotation,
     },
-    transcript::{EncodedChallenge, TranscriptWrite},
+    transcript::{ChallengeScalar, EncodedChallenge, TranscriptWrite},
 };
 
 #[derive(Debug)]
 pub(in crate::plonk) struct Compressed<C: CurveAffine, Ev> {
-    original_cosets: poly::Ast<Ev, C::Scalar, ExtendedLagrangeCoeff>,
-    original: Polynomial<C::Scalar, LagrangeCoeff>,
-    permuted_cosets: poly::Ast<Ev, C::Scalar, ExtendedLagrangeCoeff>,
-    permuted: Polynomial<C::Scalar, LagrangeCoeff>,
+    pub original_cosets: poly::Ast<Ev, C::Scalar, ExtendedLagrangeCoeff>,
+    pub original: Polynomial<C::Scalar, LagrangeCoeff>,
+    pub permuted_cosets: poly::Ast<Ev, C::Scalar, ExtendedLagrangeCoeff>,
+    pub permuted: Polynomial<C::Scalar, LagrangeCoeff>,
 }
 
 #[derive(Debug)]
 pub(in crate::plonk) struct Committed<C: CurveAffine, Ev> {
-    compressed: Compressed<C, Ev>,
-    product_poly: Polynomial<C::Scalar, Coeff>,
-    product_coset: poly::AstLeaf<Ev, ExtendedLagrangeCoeff>,
-    product_blind: Blind<C::Scalar>,
+    pub compressed: Compressed<C, Ev>,
+    pub product_poly: Polynomial<C::Scalar, Coeff>,
+    pub product_coset: poly::AstLeaf<Ev, ExtendedLagrangeCoeff>,
+    pub product_blind: Blind<C::Scalar>,
 }
 
 #[derive(Debug)]
@@ -97,11 +97,12 @@ impl<C: CurveAffine, Ev> Compressed<C, Ev> {
         E: EncodedChallenge<C>,
         R: RngCore,
         T: TranscriptWrite<C, E>,
+        Challenge: Copy + Send + Sync,
     >(
         self,
         pk: &ProvingKey<C>,
         params: &Params<C>,
-        beta: ChallengeBeta<C>,
+        challenge: ChallengeScalar<C, Challenge>,
         evaluator: &mut poly::Evaluator<Ev, C::Scalar, ExtendedLagrangeCoeff>,
         mut rng: R,
         transcript: &mut T,
@@ -109,8 +110,8 @@ impl<C: CurveAffine, Ev> Compressed<C, Ev> {
         let blinding_factors = pk.vk.cs.blinding_factors();
         // Goal is to compute the products of fractions
         //
-        // Numerator: (\theta^{m-1} a_0(\omega^i) + \theta^{m-2} a_1(\omega^i) + ... + \theta a_{m-2}(\omega^i) + a_{m-1}(\omega^i) + \beta)
-        // Denominator: (\theta^{m-1} a'_0(\omega^i) + \theta^{m-2} a'_1(\omega^i) + ... + \theta a'_{m-2}(\omega^i) + a'_{m-1}(\omega^i) + \beta)
+        // Numerator: (\theta^{m-1} a_0(\omega^i) + \theta^{m-2} a_1(\omega^i) + ... + \theta a_{m-2}(\omega^i) + a_{m-1}(\omega^i) + challenge)
+        // Denominator: (\theta^{m-1} a'_0(\omega^i) + \theta^{m-2} a'_1(\omega^i) + ... + \theta a'_{m-2}(\omega^i) + a'_{m-1}(\omega^i) + challenge)
         //
         // where a(X) is the compression of the original expressions in this multiset equality check,
         // a'(X) is the compression of the permuted expressions,
@@ -120,7 +121,7 @@ impl<C: CurveAffine, Ev> Compressed<C, Ev> {
         // Denominator uses the permuted expression
         parallelize(&mut product, |product, start| {
             for (product, permuted_value) in product.iter_mut().zip(self.permuted[start..].iter()) {
-                *product = *beta + permuted_value;
+                *product = *challenge + permuted_value;
             }
         });
 
@@ -129,17 +130,17 @@ impl<C: CurveAffine, Ev> Compressed<C, Ev> {
         product.iter_mut().batch_invert();
 
         // Finish the computation of the entire fraction by computing the numerators
-        // (\theta^{m-1} a_0(\omega^i) + \theta^{m-2} a_1(\omega^i) + ... + \theta a_{m-2}(\omega^i) + a_{m-1}(\omega^i) + \beta)
+        // (\theta^{m-1} a_0(\omega^i) + \theta^{m-2} a_1(\omega^i) + ... + \theta a_{m-2}(\omega^i) + a_{m-1}(\omega^i) + challenge)
         parallelize(&mut product, |product, start| {
             for (product, original_value) in product.iter_mut().zip(self.original[start..].iter()) {
-                *product *= &(*beta + original_value);
+                *product *= &(*challenge + original_value);
             }
         });
 
         // The product vector is a vector of products of fractions of the form
         //
-        // Numerator: (\theta^{m-1} a_0(\omega^i) + \theta^{m-2} a_1(\omega^i) + ... + \theta a_{m-2}(\omega^i) + a_{m-1}(\omega^i) + \beta)
-        // Denominator: (\theta^{m-1} a'_0(\omega^i) + \theta^{m-2} a'_1(\omega^i) + ... + \theta a'_{m-2}(\omega^i) + a'_{m-1}(\omega^i) + \beta)
+        // Numerator: (\theta^{m-1} a_0(\omega^i) + \theta^{m-2} a_1(\omega^i) + ... + \theta a_{m-2}(\omega^i) + a_{m-1}(\omega^i) + challenge)
+        // Denominator: (\theta^{m-1} a'_0(\omega^i) + \theta^{m-2} a'_1(\omega^i) + ... + \theta a'_{m-2}(\omega^i) + a'_{m-1}(\omega^i) + challenge)
         //
         // where there are m original expressions and m permuted expressions,
         // a_j(\omega^i)'s are the original expressions,
@@ -173,18 +174,18 @@ impl<C: CurveAffine, Ev> Compressed<C, Ev> {
             // l_0(X) * (1 - z(X)) = 0
             assert_eq!(z[0], C::Scalar::ONE);
 
-            // z(\omega X) (\theta^{m-1} a'_0(X) + ... + a'_{m-1}(X) + \beta)
-            // - z(X) (\theta^{m-1} a_0(X) + ... + a_{m-1}(X) + \beta)
+            // z(\omega X) (\theta^{m-1} a'_0(X) + ... + a'_{m-1}(X) + challenge)
+            // - z(X) (\theta^{m-1} a_0(X) + ... + a_{m-1}(X) + challenge)
             for i in 0..u {
                 let mut left = z[i + 1];
                 let permuted_value = &self.permuted[i];
 
-                left *= &(*beta + permuted_value);
+                left *= &(*challenge + permuted_value);
 
                 let mut right = z[i];
                 let original_value = self.original[i];
 
-                right *= &(*beta + original_value);
+                right *= &(*challenge + original_value);
 
                 assert_eq!(left, right);
             }

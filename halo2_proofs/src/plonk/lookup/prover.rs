@@ -1,8 +1,9 @@
 use super::super::{ChallengeBeta, ChallengeGamma, ChallengeTheta, ChallengeX, Error, ProvingKey};
 use super::compression::Context;
+use super::multiset_equality::prover::Compressed;
 use super::Argument;
 use crate::{
-    arithmetic::{eval_polynomial, parallelize, CurveAffine},
+    arithmetic::{eval_polynomial, CurveAffine},
     poly::{
         self,
         commitment::{Blind, Params},
@@ -12,10 +13,7 @@ use crate::{
     transcript::{EncodedChallenge, TranscriptWrite},
 };
 use ff::WithSmallOrderMulGroup;
-use group::{
-    ff::{BatchInvert, Field},
-    Curve,
-};
+use group::{ff::Field, Curve};
 use rand_core::RngCore;
 use std::{
     collections::BTreeMap,
@@ -24,36 +22,44 @@ use std::{
 };
 
 #[derive(Debug)]
-pub(in crate::plonk) struct Permuted<C: CurveAffine, Ev> {
-    compressed_input_expression: Polynomial<C::Scalar, LagrangeCoeff>,
-    permuted_input_expression: Polynomial<C::Scalar, LagrangeCoeff>,
-    compressed_input_coset: poly::Ast<Ev, C::Scalar, ExtendedLagrangeCoeff>,
-    permuted_input_poly: Polynomial<C::Scalar, Coeff>,
-    permuted_input_coset: poly::AstLeaf<Ev, ExtendedLagrangeCoeff>,
-    permuted_input_blind: Blind<C::Scalar>,
-    compressed_table_expression: Polynomial<C::Scalar, LagrangeCoeff>,
-    compressed_table_coset: poly::Ast<Ev, C::Scalar, ExtendedLagrangeCoeff>,
-    permuted_table_expression: Polynomial<C::Scalar, LagrangeCoeff>,
-    permuted_table_poly: Polynomial<C::Scalar, Coeff>,
-    permuted_table_coset: poly::AstLeaf<Ev, ExtendedLagrangeCoeff>,
-    permuted_table_blind: Blind<C::Scalar>,
+struct PermutedInner<C: CurveAffine, Ev> {
+    coset_leaf: poly::AstLeaf<Ev, ExtendedLagrangeCoeff>,
+    poly: Polynomial<C::Scalar, Coeff>,
+    blind: Blind<C::Scalar>,
 }
 
 #[derive(Debug)]
-pub(in crate::plonk) struct Committed<C: CurveAffine, Ev> {
-    permuted: Permuted<C, Ev>,
+pub(in crate::plonk) struct Permuted<C: CurveAffine, Ev> {
+    compressed_input: Compressed<C, Ev>,
+    input: PermutedInner<C, Ev>,
+    compressed_table: Compressed<C, Ev>,
+    table: PermutedInner<C, Ev>,
+}
+
+#[derive(Debug)]
+struct CommittedInner<C: CurveAffine, Ev> {
+    permuted: PermutedInner<C, Ev>,
     product_poly: Polynomial<C::Scalar, Coeff>,
     product_coset: poly::AstLeaf<Ev, ExtendedLagrangeCoeff>,
     product_blind: Blind<C::Scalar>,
 }
 
-pub(in crate::plonk) struct Constructed<C: CurveAffine> {
-    permuted_input_poly: Polynomial<C::Scalar, Coeff>,
-    permuted_input_blind: Blind<C::Scalar>,
-    permuted_table_poly: Polynomial<C::Scalar, Coeff>,
-    permuted_table_blind: Blind<C::Scalar>,
+#[derive(Debug)]
+pub(in crate::plonk) struct Committed<C: CurveAffine, Ev> {
+    input: CommittedInner<C, Ev>,
+    table: CommittedInner<C, Ev>,
+}
+
+struct ConstructedInner<C: CurveAffine> {
+    permuted_poly: Polynomial<C::Scalar, Coeff>,
+    permuted_blind: Blind<C::Scalar>,
     product_poly: Polynomial<C::Scalar, Coeff>,
     product_blind: Blind<C::Scalar>,
+}
+
+pub(in crate::plonk) struct Constructed<C: CurveAffine> {
+    input: ConstructedInner<C>,
+    table: ConstructedInner<C>,
 }
 
 pub(in crate::plonk) struct Evaluated<C: CurveAffine> {
@@ -151,24 +157,40 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
         // Hash permuted table commitment
         transcript.write_point(permuted_table_commitment)?;
 
-        let permuted_input_coset = coset_evaluator
+        let permuted_input_coset_leaf = coset_evaluator
             .register_poly(pk.vk.domain.coeff_to_extended(permuted_input_poly.clone()));
-        let permuted_table_coset = coset_evaluator
+        let permuted_table_coset_leaf = coset_evaluator
             .register_poly(pk.vk.domain.coeff_to_extended(permuted_table_poly.clone()));
 
+        let compressed_input = Compressed {
+            original_cosets: compressed_input_coset,
+            original: compressed_input_expression,
+            permuted_cosets: permuted_input_coset_leaf.into(),
+            permuted: permuted_input_expression,
+        };
+        let input = PermutedInner {
+            coset_leaf: permuted_input_coset_leaf,
+            poly: permuted_input_poly,
+            blind: permuted_input_blind,
+        };
+
+        let compressed_table = Compressed {
+            original_cosets: compressed_table_coset,
+            original: compressed_table_expression,
+            permuted_cosets: permuted_table_coset_leaf.into(),
+            permuted: permuted_table_expression,
+        };
+        let table = PermutedInner {
+            coset_leaf: permuted_table_coset_leaf,
+            poly: permuted_table_poly,
+            blind: permuted_table_blind,
+        };
+
         Ok(Permuted {
-            compressed_input_expression,
-            compressed_input_coset,
-            permuted_input_expression,
-            permuted_input_poly,
-            permuted_input_coset,
-            permuted_input_blind,
-            compressed_table_expression,
-            compressed_table_coset,
-            permuted_table_expression,
-            permuted_table_poly,
-            permuted_table_coset,
-            permuted_table_blind,
+            compressed_input,
+            input,
+            compressed_table,
+            table,
         })
     }
 }
@@ -194,131 +216,28 @@ impl<C: CurveAffine, Ev: Copy + Send + Sync> Permuted<C, Ev> {
         mut rng: R,
         transcript: &mut T,
     ) -> Result<Committed<C, Ev>, Error> {
-        let blinding_factors = pk.vk.cs.blinding_factors();
-        // Goal is to compute the products of fractions
-        //
-        // Numerator: (\theta^{m-1} a_0(\omega^i) + \theta^{m-2} a_1(\omega^i) + ... + \theta a_{m-2}(\omega^i) + a_{m-1}(\omega^i) + \beta)
-        //            * (\theta^{m-1} s_0(\omega^i) + \theta^{m-2} s_1(\omega^i) + ... + \theta s_{m-2}(\omega^i) + s_{m-1}(\omega^i) + \gamma)
-        // Denominator: (a'(\omega^i) + \beta) (s'(\omega^i) + \gamma)
-        //
-        // where a_j(X) is the jth input expression in this lookup,
-        // where a'(X) is the compression of the permuted input expressions,
-        // s_j(X) is the jth table expression in this lookup,
-        // s'(X) is the compression of the permuted table expressions,
-        // and i is the ith row of the expression.
-        let mut lookup_product = vec![C::Scalar::ZERO; params.n as usize];
-        // Denominator uses the permuted input expression and permuted table expression
-        parallelize(&mut lookup_product, |lookup_product, start| {
-            for ((lookup_product, permuted_input_value), permuted_table_value) in lookup_product
-                .iter_mut()
-                .zip(self.permuted_input_expression[start..].iter())
-                .zip(self.permuted_table_expression[start..].iter())
-            {
-                *lookup_product = (*beta + permuted_input_value) * &(*gamma + permuted_table_value);
-            }
-        });
+        let input = self
+            .compressed_input
+            .commit_product(pk, params, beta, evaluator, &mut rng, transcript)?;
+        let table = self
+            .compressed_table
+            .commit_product(pk, params, gamma, evaluator, rng, transcript)?;
 
-        // Batch invert to obtain the denominators for the lookup product
-        // polynomials
-        lookup_product.iter_mut().batch_invert();
+        let input = CommittedInner {
+            permuted: self.input,
+            product_poly: input.product_poly,
+            product_coset: input.product_coset,
+            product_blind: input.product_blind,
+        };
 
-        // Finish the computation of the entire fraction by computing the numerators
-        // (\theta^{m-1} a_0(\omega^i) + \theta^{m-2} a_1(\omega^i) + ... + \theta a_{m-2}(\omega^i) + a_{m-1}(\omega^i) + \beta)
-        // * (\theta^{m-1} s_0(\omega^i) + \theta^{m-2} s_1(\omega^i) + ... + \theta s_{m-2}(\omega^i) + s_{m-1}(\omega^i) + \gamma)
-        parallelize(&mut lookup_product, |product, start| {
-            for ((product, &input_term), &table_term) in product
-                .iter_mut()
-                .zip(self.compressed_input_expression[start..].iter())
-                .zip(self.compressed_table_expression[start..].iter())
-            {
-                *product *= &(input_term + &*beta);
-                *product *= &(table_term + &*gamma);
-            }
-        });
+        let table = CommittedInner {
+            permuted: self.table,
+            product_poly: table.product_poly,
+            product_coset: table.product_coset,
+            product_blind: table.product_blind,
+        };
 
-        // The product vector is a vector of products of fractions of the form
-        //
-        // Numerator: (\theta^{m-1} a_0(\omega^i) + \theta^{m-2} a_1(\omega^i) + ... + \theta a_{m-2}(\omega^i) + a_{m-1}(\omega^i) + \beta)
-        //            * (\theta^{m-1} s_0(\omega^i) + \theta^{m-2} s_1(\omega^i) + ... + \theta s_{m-2}(\omega^i) + s_{m-1}(\omega^i) + \gamma)
-        // Denominator: (a'(\omega^i) + \beta) (s'(\omega^i) + \gamma)
-        //
-        // where there are m input expressions and m table expressions,
-        // a_j(\omega^i) is the jth input expression in this lookup,
-        // a'j(\omega^i) is the permuted input expression,
-        // s_j(\omega^i) is the jth table expression in this lookup,
-        // s'(\omega^i) is the permuted table expression,
-        // and i is the ith row of the expression.
-
-        // Compute the evaluations of the lookup product polynomial
-        // over our domain, starting with z[0] = 1
-        let z = iter::once(C::Scalar::ONE)
-            .chain(lookup_product)
-            .scan(C::Scalar::ONE, |state, cur| {
-                *state *= &cur;
-                Some(*state)
-            })
-            // Take all rows including the "last" row which should
-            // be a boolean (and ideally 1, else soundness is broken)
-            .take(params.n as usize - blinding_factors)
-            // Chain random blinding factors.
-            .chain((0..blinding_factors).map(|_| C::Scalar::random(&mut rng)))
-            .collect::<Vec<_>>();
-        assert_eq!(z.len(), params.n as usize);
-        let z = pk.vk.domain.lagrange_from_vec(z);
-
-        #[cfg(feature = "sanity-checks")]
-        // This test works only with intermediate representations in this method.
-        // It can be used for debugging purposes.
-        {
-            // While in Lagrange basis, check that product is correctly constructed
-            let u = (params.n as usize) - (blinding_factors + 1);
-
-            // l_0(X) * (1 - z(X)) = 0
-            assert_eq!(z[0], C::Scalar::ONE);
-
-            // z(\omega X) (a'(X) + \beta) (s'(X) + \gamma)
-            // - z(X) (\theta^{m-1} a_0(X) + ... + a_{m-1}(X) + \beta) (\theta^{m-1} s_0(X) + ... + s_{m-1}(X) + \gamma)
-            for i in 0..u {
-                let mut left = z[i + 1];
-                let permuted_input_value = &self.permuted_input_expression[i];
-
-                let permuted_table_value = &self.permuted_table_expression[i];
-
-                left *= &(*beta + permuted_input_value);
-                left *= &(*gamma + permuted_table_value);
-
-                let mut right = z[i];
-                let mut input_term = self.compressed_input_expression[i];
-
-                let mut table_term = self.compressed_table_expression[i];
-
-                input_term += &(*beta);
-                table_term += &(*gamma);
-                right *= &(input_term * &table_term);
-
-                assert_eq!(left, right);
-            }
-
-            // l_last(X) * (z(X)^2 - z(X)) = 0
-            // Assertion will fail only when soundness is broken, in which
-            // case this z[u] value will be zero. (bad!)
-            assert_eq!(z[u], C::Scalar::ONE);
-        }
-
-        let product_blind = Blind(C::Scalar::random(rng));
-        let product_commitment = params.commit_lagrange(&z, product_blind).to_affine();
-        let z = pk.vk.domain.lagrange_to_coeff(z);
-        let product_coset = evaluator.register_poly(pk.vk.domain.coeff_to_extended(z.clone()));
-
-        // Hash product commitment
-        transcript.write_point(product_commitment)?;
-
-        Ok(Committed::<C, _> {
-            permuted: self,
-            product_poly: z,
-            product_coset,
-            product_blind,
-        })
+        Ok(Committed::<C, _> { input, table })
     }
 }
 
@@ -339,36 +258,58 @@ impl<'a, C: CurveAffine, Ev: Copy + Send + Sync + 'a> Committed<C, Ev> {
         Constructed<C>,
         impl Iterator<Item = poly::Ast<Ev, C::Scalar, ExtendedLagrangeCoeff>> + 'a,
     ) {
-        let permuted = self.permuted;
-
         let active_rows = poly::Ast::one() - (poly::Ast::from(l_last) + l_blind);
         let beta = poly::Ast::ConstantTerm(*beta);
         let gamma = poly::Ast::ConstantTerm(*gamma);
 
         let expressions = iter::empty()
-            // l_0(X) * (1 - z(X)) = 0
-            .chain(Some((poly::Ast::one() - self.product_coset) * l0))
-            // l_last(X) * (z(X)^2 - z(X)) = 0
+            // l_0(X) * (1 - z_input(X)) = 0
+            .chain(Some((poly::Ast::one() - self.input.product_coset) * l0))
+            // l_0(X) * (1 - z_table(X)) = 0
+            .chain(Some((poly::Ast::one() - self.table.product_coset) * l0))
+            // l_last(X) * (z_input(X)^2 - z_input(X)) = 0
             .chain(Some(
-                (poly::Ast::from(self.product_coset) * self.product_coset - self.product_coset)
+                (poly::Ast::from(self.input.product_coset)
+                    * poly::Ast::from(self.input.product_coset)
+                    - poly::Ast::from(self.input.product_coset))
+                    * l_last,
+            ))
+            // l_last(X) * (z_table(X)^2 - z_table(X)) = 0
+            .chain(Some(
+                (poly::Ast::from(self.table.product_coset)
+                    * poly::Ast::from(self.table.product_coset)
+                    - poly::Ast::from(self.table.product_coset))
                     * l_last,
             ))
             // (1 - (l_last(X) + l_blind(X))) * (
-            //   z(\omega X) (a'(X) + \beta) (s'(X) + \gamma)
-            //   - z(X) (\theta^{m-1} a_0(X) + ... + a_{m-1}(X) + \beta) (\theta^{m-1} s_0(X) + ... + s_{m-1}(X) + \gamma)
+            //   z_input(\omega X) (a'(X) + \beta)
+            //   - z_input(X) (\theta^{m-1} a_0(X) + ... + a_{m-1}(X) + \beta)
             // ) = 0
             .chain({
-                // z(\omega X) (a'(X) + \beta) (s'(X) + \gamma)
-                let left: poly::Ast<_, _, _> = poly::Ast::<_, C::Scalar, _>::from(
-                    self.product_coset.with_rotation(Rotation::next()),
-                ) * (poly::Ast::from(permuted.permuted_input_coset)
-                    + beta.clone())
-                    * (poly::Ast::from(permuted.permuted_table_coset) + gamma.clone());
+                // z_input(\omega X) (a'(X) + \beta)
+                let left: poly::Ast<_, _, _> =
+                    poly::Ast::from(self.input.product_coset.with_rotation(Rotation::next()))
+                        * (poly::Ast::from(self.input.permuted.coset_leaf) + beta.clone());
 
-                //  z(X) (\theta^{m-1} a_0(X) + ... + a_{m-1}(X) + \beta) (\theta^{m-1} s_0(X) + ... + s_{m-1}(X) + \gamma)
-                let right: poly::Ast<_, _, _> = poly::Ast::from(self.product_coset)
-                    * (permuted.compressed_input_coset + beta)
-                    * (permuted.compressed_table_coset + gamma);
+                //  z_input(X) (\theta^{m-1} a_0(X) + ... + a_{m-1}(X) + \beta)
+                let right: poly::Ast<_, _, _> = poly::Ast::from(self.input.product_coset)
+                    * (poly::Ast::from(self.input.permuted.coset_leaf) + beta);
+
+                Some((left - right) * active_rows.clone())
+            })
+            // (1 - (l_last(X) + l_blind(X))) * (
+            //   z_table(\omega X) (s'(X) + \gamma)
+            //   - z_table(X) (\theta^{m-1} s_0(X) + ... + s_{m-1}(X) + \gamma)
+            // ) = 0
+            .chain({
+                // z_table(\omega X) (s'(X) + \gamma)
+                let left: poly::Ast<_, _, _> =
+                    poly::Ast::from(self.table.product_coset.with_rotation(Rotation::next()))
+                        * (poly::Ast::from(self.table.permuted.coset_leaf) + gamma.clone());
+
+                //  z_table(X) (\theta^{m-1} s_0(X) + ... + s_{m-1}(X) + \gamma)
+                let right: poly::Ast<_, _, _> = poly::Ast::from(self.table.product_coset)
+                    * (poly::Ast::from(self.table.permuted.coset_leaf) + gamma);
 
                 Some((left - right) * active_rows.clone())
             })
@@ -376,7 +317,8 @@ impl<'a, C: CurveAffine, Ev: Copy + Send + Sync + 'a> Committed<C, Ev> {
             // fixed expression are the same.
             // l_0(X) * (a'(X) - s'(X)) = 0
             .chain(Some(
-                (poly::Ast::from(permuted.permuted_input_coset) - permuted.permuted_table_coset)
+                (poly::Ast::from(self.input.permuted.coset_leaf)
+                    - poly::Ast::from(self.table.permuted.coset_leaf))
                     * l0,
             ))
             // Check that each value in the permuted lookup input expression is either
@@ -384,23 +326,31 @@ impl<'a, C: CurveAffine, Ev: Copy + Send + Sync + 'a> Committed<C, Ev> {
             // permuted table expression.
             // (1 - (l_last + l_blind)) * (a′(X) − s′(X))⋅(a′(X) − a′(\omega^{-1} X)) = 0
             .chain(Some(
-                (poly::Ast::<_, C::Scalar, _>::from(permuted.permuted_input_coset)
-                    - permuted.permuted_table_coset)
-                    * (poly::Ast::from(permuted.permuted_input_coset)
-                        - permuted
-                            .permuted_input_coset
+                (poly::Ast::from(self.input.permuted.coset_leaf)
+                    - poly::Ast::from(self.table.permuted.coset_leaf))
+                    * (poly::Ast::from(self.input.permuted.coset_leaf)
+                        - self
+                            .input
+                            .permuted
+                            .coset_leaf
                             .with_rotation(Rotation::prev()))
                     * active_rows,
             ));
 
         (
             Constructed {
-                permuted_input_poly: permuted.permuted_input_poly,
-                permuted_input_blind: permuted.permuted_input_blind,
-                permuted_table_poly: permuted.permuted_table_poly,
-                permuted_table_blind: permuted.permuted_table_blind,
-                product_poly: self.product_poly,
-                product_blind: self.product_blind,
+                input: ConstructedInner {
+                    permuted_poly: self.input.permuted.poly,
+                    permuted_blind: self.input.permuted.blind,
+                    product_poly: self.input.product_poly,
+                    product_blind: self.input.product_blind,
+                },
+                table: ConstructedInner {
+                    permuted_poly: self.table.permuted.poly,
+                    permuted_blind: self.table.permuted.blind,
+                    product_poly: self.table.product_poly,
+                    product_blind: self.table.product_blind,
+                },
             },
             expressions,
         )
@@ -418,16 +368,20 @@ impl<C: CurveAffine> Constructed<C> {
         let x_inv = domain.rotate_omega(*x, Rotation::prev());
         let x_next = domain.rotate_omega(*x, Rotation::next());
 
-        let product_eval = eval_polynomial(&self.product_poly, *x);
-        let product_next_eval = eval_polynomial(&self.product_poly, x_next);
-        let permuted_input_eval = eval_polynomial(&self.permuted_input_poly, *x);
-        let permuted_input_inv_eval = eval_polynomial(&self.permuted_input_poly, x_inv);
-        let permuted_table_eval = eval_polynomial(&self.permuted_table_poly, *x);
+        let product_input_eval = eval_polynomial(&self.input.product_poly, *x);
+        let product_input_next_eval = eval_polynomial(&self.input.product_poly, x_next);
+        let product_table_eval = eval_polynomial(&self.table.product_poly, *x);
+        let product_table_next_eval = eval_polynomial(&self.table.product_poly, x_next);
+        let permuted_input_eval = eval_polynomial(&self.input.permuted_poly, *x);
+        let permuted_input_inv_eval = eval_polynomial(&self.input.permuted_poly, x_inv);
+        let permuted_table_eval = eval_polynomial(&self.table.permuted_poly, *x);
 
         // Hash each advice evaluation
         for eval in iter::empty()
-            .chain(Some(product_eval))
-            .chain(Some(product_next_eval))
+            .chain(Some(product_input_eval))
+            .chain(Some(product_input_next_eval))
+            .chain(Some(product_table_eval))
+            .chain(Some(product_table_next_eval))
             .chain(Some(permuted_input_eval))
             .chain(Some(permuted_input_inv_eval))
             .chain(Some(permuted_table_eval))
@@ -449,35 +403,47 @@ impl<C: CurveAffine> Evaluated<C> {
         let x_next = pk.vk.domain.rotate_omega(*x, Rotation::next());
 
         iter::empty()
-            // Open lookup product commitments at x
+            // Open lookup input product commitments at x
             .chain(Some(ProverQuery {
                 point: *x,
-                poly: &self.constructed.product_poly,
-                blind: self.constructed.product_blind,
+                poly: &self.constructed.input.product_poly,
+                blind: self.constructed.input.product_blind,
+            }))
+            // Open lookup table product commitments at x
+            .chain(Some(ProverQuery {
+                point: *x,
+                poly: &self.constructed.table.product_poly,
+                blind: self.constructed.table.product_blind,
             }))
             // Open lookup input commitments at x
             .chain(Some(ProverQuery {
                 point: *x,
-                poly: &self.constructed.permuted_input_poly,
-                blind: self.constructed.permuted_input_blind,
+                poly: &self.constructed.input.permuted_poly,
+                blind: self.constructed.input.permuted_blind,
             }))
             // Open lookup table commitments at x
             .chain(Some(ProverQuery {
                 point: *x,
-                poly: &self.constructed.permuted_table_poly,
-                blind: self.constructed.permuted_table_blind,
+                poly: &self.constructed.table.permuted_poly,
+                blind: self.constructed.table.permuted_blind,
             }))
             // Open lookup input commitments at x_inv
             .chain(Some(ProverQuery {
                 point: x_inv,
-                poly: &self.constructed.permuted_input_poly,
-                blind: self.constructed.permuted_input_blind,
+                poly: &self.constructed.input.permuted_poly,
+                blind: self.constructed.input.permuted_blind,
             }))
-            // Open lookup product commitments at x_next
+            // Open lookup input product commitments at x_next
             .chain(Some(ProverQuery {
                 point: x_next,
-                poly: &self.constructed.product_poly,
-                blind: self.constructed.product_blind,
+                poly: &self.constructed.input.product_poly,
+                blind: self.constructed.input.product_blind,
+            }))
+            // Open lookup table product commitments at x_next
+            .chain(Some(ProverQuery {
+                point: x_next,
+                poly: &self.constructed.table.product_poly,
+                blind: self.constructed.table.product_blind,
             }))
     }
 }
