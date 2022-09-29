@@ -1,6 +1,7 @@
 use super::circuit::Expression;
 use ff::Field;
 
+pub(crate) mod multiset_equality;
 pub(crate) mod prover;
 pub(crate) mod verifier;
 

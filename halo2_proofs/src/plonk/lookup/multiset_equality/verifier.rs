@@ -1,10 +1,9 @@
 use std::iter;
 
-use super::super::{circuit::Expression, ChallengeBeta, ChallengeTheta, ChallengeX};
 use super::Argument;
 use crate::{
     arithmetic::{CurveAffine, FieldExt},
-    plonk::{Error, VerifyingKey},
+    plonk::{circuit::Expression, ChallengeBeta, ChallengeTheta, ChallengeX, Error, VerifyingKey},
     poly::{multiopen::VerifierQuery, Rotation},
     transcript::{EncodedChallenge, TranscriptRead},
 };

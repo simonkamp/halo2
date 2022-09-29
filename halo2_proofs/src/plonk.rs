@@ -20,7 +20,6 @@ mod circuit;
 mod error;
 mod keygen;
 mod lookup;
-mod multiset_equality;
 pub(crate) mod permutation;
 mod vanishing;
 
@@ -31,6 +30,7 @@ pub use assigned::*;
 pub use circuit::*;
 pub use error::*;
 pub use keygen::*;
+pub(crate) use lookup::multiset_equality;
 pub use prover::*;
 pub use verifier::*;
 
