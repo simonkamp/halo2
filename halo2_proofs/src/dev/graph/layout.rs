@@ -3,8 +3,8 @@ use plotters::{
     coord::Shift,
     prelude::{DrawingArea, DrawingAreaErrorKind, DrawingBackend},
 };
-use std::collections::HashSet;
 use std::ops::Range;
+use std::{cmp, collections::HashSet};
 
 use crate::{
     circuit::layouter::RegionColumn,
