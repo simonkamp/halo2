@@ -2,8 +2,6 @@ use std::marker::PhantomData;
 
 use super::{EccPoint, NonIdentityEccPoint};
 
-use group::prime::PrimeCurveAffine;
-
 use halo2_proofs::{
     circuit::{AssignedCell, Region, Value},
     plonk::{
@@ -155,6 +153,7 @@ impl<C: CurveAffine> Config<C> {
 
 #[cfg(test)]
 pub mod tests {
+    use group::prime::PrimeCurveAffine;
     use halo2_proofs::circuit::Layouter;
     use pasta_curves::pallas;
 

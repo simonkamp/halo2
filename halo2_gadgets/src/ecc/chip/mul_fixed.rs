@@ -11,7 +11,6 @@ use group::{
     Curve,
 };
 use halo2_proofs::{
-    arithmetic::CurveExt,
     circuit::{AssignedCell, Region, Value},
     plonk::{
         Advice, Column, ConstraintSystem, Constraints, Error, Expression, Fixed, Selector,

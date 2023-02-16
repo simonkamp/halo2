@@ -116,9 +116,10 @@ where
         // from alpha and k_254.
         let s = {
             let k_254 = zs[254].clone();
-            let s_val = alpha.value().zip(k_254.value()).map(|(alpha, k_254)| {
-                alpha.clone() + k_254.clone() * C::Base::from_u128(1 << 65).square()
-            });
+            let s_val = alpha
+                .value()
+                .zip(k_254.value())
+                .map(|(alpha, k_254)| *alpha + *k_254 * C::Base::from_u128(1 << 65).square());
 
             layouter.assign_region(
                 || "s = alpha + k_254 ⋅ 2^130",

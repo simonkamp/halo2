@@ -214,7 +214,7 @@ where
         // tested at the circuit-level.
         {
             use super::super::FixedPoint;
-            use group::{ff::PrimeField, Curve};
+            use group::Curve;
 
             scalar
                 .magnitude
