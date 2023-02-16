@@ -8,8 +8,9 @@ use std::{
     ops::{Deref, Range},
 };
 
-use ff::{Field, PrimeField};
+use ff::{Field, PrimeField, PrimeFieldBits};
 use halo2_proofs::{
+    arithmetic::CurveAffine,
     circuit::{AssignedCell, Layouter, Region, Value},
     plonk::{Advice, Assigned, Column, ConstraintSystem, Constraints, Error, Selector},
     poly::Rotation,
@@ -27,7 +28,7 @@ mod overflow;
 const NUM_COMPLETE_BITS: usize = 3;
 
 // Bits used in incomplete addition. k_{254} to k_{4} inclusive
-const INCOMPLETE_LEN: usize = pallas::Scalar::NUM_BITS as usize - 1 - NUM_COMPLETE_BITS;
+const INCOMPLETE_LEN: usize = pallas::Scalar::NUM_BITS as usize - 1 - NUM_COMPLETE_BITS; // todo
 
 // Bits k_{254} to k_{4} inclusive are used in incomplete addition.
 // The `hi` half is k_{254} to k_{130} inclusive (length 125 bits).
@@ -46,26 +47,36 @@ const INCOMPLETE_LO_LEN: usize = INCOMPLETE_LEN - INCOMPLETE_HI_LEN;
 const COMPLETE_RANGE: Range<usize> = INCOMPLETE_LEN..(INCOMPLETE_LEN + NUM_COMPLETE_BITS);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Config {
+pub struct Config<C: CurveAffine>
+where
+    C::Base: PrimeFieldBits,
+    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
+    C::Base: PrimeField<Repr = [u8; 32]>,
+{
     // Selector used to check switching logic on LSB
     q_mul_lsb: Selector,
     // Configuration used in complete addition
-    add_config: add::Config,
+    add_config: add::Config<C>,
     // Configuration used for `hi` bits of the scalar
-    hi_config: incomplete::Config<INCOMPLETE_HI_LEN>,
+    hi_config: incomplete::Config<C, INCOMPLETE_HI_LEN>,
     // Configuration used for `lo` bits of the scalar
-    lo_config: incomplete::Config<INCOMPLETE_LO_LEN>,
+    lo_config: incomplete::Config<C, INCOMPLETE_LO_LEN>,
     // Configuration used for complete addition part of double-and-add algorithm
-    complete_config: complete::Config,
+    complete_config: complete::Config<C>,
     // Configuration used to check for overflow
-    overflow_config: overflow::Config,
+    overflow_config: overflow::Config<C>,
 }
 
-impl Config {
+impl<C: CurveAffine> Config<C>
+where
+    C::Base: PrimeFieldBits,
+    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
+    C::Base: PrimeField<Repr = [u8; 32]>,
+{
     pub(super) fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
-        add_config: add::Config,
-        lookup_config: LookupRangeCheckConfig<pallas::Base, { sinsemilla::K }>,
+        meta: &mut ConstraintSystem<C::Base>,
+        add_config: add::Config<C>,
+        lookup_config: LookupRangeCheckConfig<C::Base, { sinsemilla::K }>,
         advices: [Column<Advice>; 10],
     ) -> Self {
         let hi_config = incomplete::Config::configure(
@@ -126,7 +137,7 @@ impl Config {
         config
     }
 
-    fn create_gate(&self, meta: &mut ConstraintSystem<pallas::Base>) {
+    fn create_gate(&self, meta: &mut ConstraintSystem<C::Base>) {
         // If `lsb` is 0, (x, y) = (x_p, -y_p). If `lsb` is 1, (x, y) = (0,0).
         // https://p.z.cash/halo2-0.1:ecc-var-mul-lsb-gate?partial
         meta.create_gate("LSB check", |meta| {
@@ -141,7 +152,7 @@ impl Config {
 
             //    z_0 = 2 * z_1 + k_0
             // => k_0 = z_0 - 2 * z_1
-            let lsb = z_0 - z_1 * pallas::Base::from(2);
+            let lsb = z_0 - z_1 * C::Base::from(2);
 
             let bool_check = bool_check(lsb.clone());
 
@@ -163,25 +174,25 @@ impl Config {
 
     pub(super) fn assign(
         &self,
-        mut layouter: impl Layouter<pallas::Base>,
-        alpha: AssignedCell<pallas::Base, pallas::Base>,
-        base: &NonIdentityEccPoint,
-    ) -> Result<(EccPoint, ScalarVar), Error> {
-        let (result, zs): (EccPoint, Vec<Z<pallas::Base>>) = layouter.assign_region(
+        mut layouter: impl Layouter<C::Base>,
+        alpha: AssignedCell<C::Base, C::Base>,
+        base: &NonIdentityEccPoint<C>,
+    ) -> Result<(EccPoint<C>, ScalarVar<C>), Error> {
+        let (result, zs): (EccPoint<C>, Vec<Z<C::Base>>) = layouter.assign_region(
             || "variable-base scalar mul",
             |mut region| {
                 let offset = 0;
 
                 // Case `base` into an `EccPoint` for later use.
-                let base_point: EccPoint = base.clone().into();
+                let base_point: EccPoint<C> = base.clone().into();
 
                 // Decompose `k = alpha + t_q` bitwise (big-endian bit order).
-                let bits = decompose_for_scalar_mul(alpha.value());
+                let bits = decompose_for_scalar_mul::<C>(alpha.value());
 
                 // Define ranges for each part of the algorithm.
                 let bits_incomplete_hi = &bits[INCOMPLETE_HI_RANGE];
                 let bits_incomplete_lo = &bits[INCOMPLETE_LO_RANGE];
-                let lsb = bits[pallas::Scalar::NUM_BITS as usize - 1];
+                let lsb = bits[C::Scalar::NUM_BITS as usize - 1];
 
                 // Initialize the accumulator `acc = [2]base` using complete addition.
                 let acc =
@@ -201,7 +212,7 @@ impl Config {
                     || "z_init = 0",
                     self.hi_config.z,
                     offset,
-                    pallas::Base::zero(),
+                    C::Base::ZERO,
                 )?);
 
                 // Double-and-add (incomplete addition) for the `hi` half of the scalar decomposition
@@ -264,7 +275,7 @@ impl Config {
                     let base = base.point();
                     let alpha = alpha
                         .value()
-                        .map(|alpha| pallas::Scalar::from_repr(alpha.to_repr()).unwrap());
+                        .map(|alpha| C::Scalar::from_repr(alpha.to_repr()).unwrap());
                     let real_mul = base.zip(alpha).map(|(base, alpha)| base * alpha);
                     let result = result.point();
 
@@ -320,13 +331,13 @@ impl Config {
     /// [Specification](https://p.z.cash/halo2-0.1:ecc-var-mul-lsb-gate?partial).
     fn process_lsb(
         &self,
-        region: &mut Region<'_, pallas::Base>,
+        region: &mut Region<'_, C::Base>,
         offset: usize,
-        base: &NonIdentityEccPoint,
-        acc: EccPoint,
-        z_1: Z<pallas::Base>,
+        base: &NonIdentityEccPoint<C>,
+        acc: EccPoint<C>,
+        z_1: Z<C::Base>,
         lsb: Value<bool>,
-    ) -> Result<(EccPoint, Z<pallas::Base>), Error> {
+    ) -> Result<(EccPoint<C>, Z<C::Base>), Error> {
         // Enforce switching logic on LSB using a custom gate
         self.q_mul_lsb.enable(region, offset)?;
 
@@ -334,8 +345,8 @@ impl Config {
         // Assign z_0 = 2⋅z_1 + k_0
         let z_0 = {
             let z_0_val = z_1.value().zip(lsb).map(|(z_1, lsb)| {
-                let lsb = pallas::Base::from(lsb as u64);
-                z_1 * pallas::Base::from(2) + lsb
+                let lsb = C::Base::from(lsb as u64);
+                z_1.clone() * C::Base::from(2) + lsb
             });
             let z_0_cell = region.assign_advice(
                 || "z_0",
@@ -418,7 +429,10 @@ impl<F: Field> Deref for Z<F> {
 // https://p.z.cash/halo2-0.1:ecc-var-mul-witness-scalar?partial
 #[allow(clippy::assign_op_pattern)]
 #[allow(clippy::ptr_offset_with_cast)]
-fn decompose_for_scalar_mul(scalar: Value<&pallas::Base>) -> Vec<Value<bool>> {
+fn decompose_for_scalar_mul<C: CurveAffine>(scalar: Value<&C::Base>) -> Vec<Value<bool>>
+where
+    C::Base: PrimeField<Repr = [u8; 32]>,
+{
     construct_uint! {
         struct U256(4);
     }
@@ -464,6 +478,7 @@ pub mod tests {
         circuit::{Chip, Layouter, Value},
         plonk::Error,
     };
+
     use pasta_curves::pallas;
     use rand::rngs::OsRng;
 
@@ -477,15 +492,18 @@ pub mod tests {
     };
 
     pub(crate) fn test_mul(
-        chip: EccChip<TestFixedBases>,
+        chip: EccChip<pallas::Affine, TestFixedBases>,
         mut layouter: impl Layouter<pallas::Base>,
-        p: &NonIdentityPoint<pallas::Affine, EccChip<TestFixedBases>>,
+        p: &NonIdentityPoint<pallas::Affine, EccChip<pallas::Affine, TestFixedBases>>,
         p_val: pallas::Affine,
     ) -> Result<(), Error> {
         let column = chip.config().advices[0];
 
         fn constrain_equal_non_id<
-            EccChip: EccInstructions<pallas::Affine, Point = EccPoint> + Clone + Eq + std::fmt::Debug,
+            EccChip: EccInstructions<pallas::Affine, Point = EccPoint<pallas::Affine>>
+                + Clone
+                + Eq
+                + std::fmt::Debug,
         >(
             chip: EccChip,
             mut layouter: impl Layouter<pallas::Base>,
@@ -495,6 +513,7 @@ pub mod tests {
         ) -> Result<(), Error> {
             // Move scalar from base field into scalar field (which always fits
             // for Pallas).
+            // todo check Vesta
             let scalar = pallas::Scalar::from_repr(scalar_val.to_repr()).unwrap();
             let expected = NonIdentityPoint::new(
                 chip,

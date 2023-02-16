@@ -2,29 +2,28 @@ use super::super::{add, EccPoint};
 use super::{COMPLETE_RANGE, X, Y, Z};
 use crate::utilities::{bool_check, ternary};
 
+use halo2_proofs::arithmetic::CurveAffine;
 use halo2_proofs::{
     circuit::{Region, Value},
     plonk::{Advice, Column, ConstraintSystem, Constraints, Error, Expression, Selector},
     poly::Rotation,
 };
 
-use pasta_curves::pallas;
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Config {
+pub struct Config<C: CurveAffine> {
     // Selector used to constrain the cells used in complete addition.
     q_mul_decompose_var: Selector,
     // Advice column used to decompose scalar in complete addition.
     pub z_complete: Column<Advice>,
     // Configuration used in complete addition
-    add_config: add::Config,
+    add_config: add::Config<C>,
 }
 
-impl Config {
+impl<C: CurveAffine> Config<C> {
     pub(super) fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
+        meta: &mut ConstraintSystem<C::Base>,
         z_complete: Column<Advice>,
-        add_config: add::Config,
+        add_config: add::Config<C>,
     ) -> Self {
         meta.enable_equality(z_complete);
 
@@ -43,7 +42,7 @@ impl Config {
     /// This is used to check the bits used in complete addition, since the incomplete
     /// addition gate (controlled by `q_mul`) already checks scalar decomposition for
     /// the other bits.
-    fn create_gate(&self, meta: &mut ConstraintSystem<pallas::Base>) {
+    fn create_gate(&self, meta: &mut ConstraintSystem<C::Base>) {
         // | y_p | z_complete |
         // --------------------
         // | y_p | z_{i + 1}  |
@@ -60,7 +59,7 @@ impl Config {
                 let z_next = meta.query_advice(self.z_complete, Rotation::next());
 
                 // k_{i} = z_{i} - 2⋅z_{i+1}
-                let k = z_next - Expression::Constant(pallas::Base::from(2)) * z_prev;
+                let k = z_next - Expression::Constant(C::Base::from(2)) * z_prev;
                 // (k_i) ⋅ (1 - k_i) = 0
                 let bool_check = bool_check(k.clone());
 
@@ -86,14 +85,14 @@ impl Config {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn assign_region(
         &self,
-        region: &mut Region<'_, pallas::Base>,
+        region: &mut Region<'_, C::Base>,
         offset: usize,
         bits: &[Value<bool>],
-        base: &EccPoint,
-        x_a: X<pallas::Base>,
-        y_a: Y<pallas::Base>,
-        z: Z<pallas::Base>,
-    ) -> Result<(EccPoint, Vec<Z<pallas::Base>>), Error> {
+        base: &EccPoint<C>,
+        x_a: X<C::Base>,
+        y_a: Y<C::Base>,
+        z: Z<C::Base>,
+    ) -> Result<(EccPoint<C>, Vec<Z<C::Base>>), Error> {
         // Make sure we have the correct number of bits for the complete addition
         // part of variable-base scalar mul.
         assert_eq!(bits.len(), COMPLETE_RANGE.len());
@@ -123,7 +122,7 @@ impl Config {
         };
 
         // Store interstitial running sum `z`s in vector
-        let mut zs: Vec<Z<pallas::Base>> = Vec::with_capacity(bits.len());
+        let mut zs: Vec<Z<C::Base>> = Vec::with_capacity(bits.len());
 
         // Complete addition
         for (iter, k) in bits.iter().enumerate() {
@@ -139,8 +138,9 @@ impl Config {
             // Update `z`.
             z = {
                 // z_next = z_cur * 2 + k_next
-                let z_val = z.value() * Value::known(pallas::Base::from(2))
-                    + k.map(|k| pallas::Base::from(k as u64));
+                // let z_val = z.value() * Value::known(C::Base::from(2)) // todo this causes inf recursion in type checker, I think
+                let z_val =
+                    Value::known(C::Base::from(2)) * z.value() + k.map(|k| C::Base::from(k as u64));
                 let z_cell =
                     region.assign_advice(|| "z", self.z_complete, row + offset + 2, || z_val)?;
                 Z(z_cell)

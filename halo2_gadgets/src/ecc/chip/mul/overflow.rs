@@ -3,31 +3,38 @@ use crate::{
     sinsemilla::primitives as sinsemilla, utilities::lookup_range_check::LookupRangeCheckConfig,
 };
 
+use ff::{Field, PrimeFieldBits};
 use group::ff::PrimeField;
+use halo2_proofs::arithmetic::CurveAffine;
 use halo2_proofs::circuit::AssignedCell;
 use halo2_proofs::{
     circuit::Layouter,
     plonk::{Advice, Assigned, Column, ConstraintSystem, Constraints, Error, Expression, Selector},
     poly::Rotation,
 };
-use pasta_curves::pallas;
 
 use std::iter;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Config {
+pub struct Config<C: CurveAffine>
+where
+    C::Base: PrimeFieldBits,
+{
     // Selector to check z_0 = alpha + t_q (mod p)
     q_mul_overflow: Selector,
     // 10-bit lookup table
-    lookup_config: LookupRangeCheckConfig<pallas::Base, { sinsemilla::K }>,
+    lookup_config: LookupRangeCheckConfig<C::Base, { sinsemilla::K }>,
     // Advice columns
     advices: [Column<Advice>; 3],
 }
 
-impl Config {
+impl<C: CurveAffine> Config<C>
+where
+    C::Base: PrimeFieldBits,
+{
     pub(super) fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
-        lookup_config: LookupRangeCheckConfig<pallas::Base, { sinsemilla::K }>,
+        meta: &mut ConstraintSystem<C::Base>,
+        lookup_config: LookupRangeCheckConfig<C::Base, { sinsemilla::K }>,
         advices: [Column<Advice>; 3],
     ) -> Self {
         for advice in advices.iter() {
@@ -45,16 +52,16 @@ impl Config {
         config
     }
 
-    fn create_gate(&self, meta: &mut ConstraintSystem<pallas::Base>) {
+    fn create_gate(&self, meta: &mut ConstraintSystem<C::Base>) {
         // https://p.z.cash/halo2-0.1:ecc-var-mul-overflow
         meta.create_gate("overflow checks", |meta| {
             let q_mul_overflow = meta.query_selector(self.q_mul_overflow);
 
             // Constant expressions
-            let one = Expression::Constant(pallas::Base::one());
-            let two_pow_124 = Expression::Constant(pallas::Base::from_u128(1 << 124));
+            let one = Expression::Constant(C::Base::ONE);
+            let two_pow_124 = Expression::Constant(C::Base::from_u128(1 << 124));
             let two_pow_130 =
-                two_pow_124.clone() * Expression::Constant(pallas::Base::from_u128(1 << 6));
+                two_pow_124.clone() * Expression::Constant(C::Base::from_u128(1 << 6));
 
             let z_0 = meta.query_advice(self.advices[0], Rotation::prev());
             let z_130 = meta.query_advice(self.advices[0], Rotation::cur());
@@ -71,7 +78,7 @@ impl Config {
 
             // q = 2^254 + t_q is the Pallas scalar field modulus.
             // We cast t_q into the base field to check alpha + t_q (mod p).
-            let t_q = Expression::Constant(pallas::Base::from_u128(T_Q));
+            let t_q = Expression::Constant(C::Base::from_u128(T_Q));
 
             // z_0 - alpha - t_q = 0 (mod p)
             let recovery = z_0 - alpha - t_q;
@@ -99,9 +106,9 @@ impl Config {
 
     pub(super) fn overflow_check(
         &self,
-        mut layouter: impl Layouter<pallas::Base>,
-        alpha: AssignedCell<pallas::Base, pallas::Base>,
-        zs: &[Z<pallas::Base>], // [z_0, z_1, ..., z_{254}, z_{255}]
+        mut layouter: impl Layouter<C::Base>,
+        alpha: AssignedCell<C::Base, C::Base>,
+        zs: &[Z<C::Base>], // [z_0, z_1, ..., z_{254}, z_{255}]
     ) -> Result<(), Error> {
         // s = alpha + k_254 ⋅ 2^130 is witnessed here, and then copied into
         // the decomposition as well as the overflow check gate.
@@ -109,10 +116,9 @@ impl Config {
         // from alpha and k_254.
         let s = {
             let k_254 = zs[254].clone();
-            let s_val = alpha
-                .value()
-                .zip(k_254.value())
-                .map(|(alpha, k_254)| alpha + k_254 * pallas::Base::from_u128(1 << 65).square());
+            let s_val = alpha.value().zip(k_254.value()).map(|(alpha, k_254)| {
+                alpha.clone() + k_254.clone() * C::Base::from_u128(1 << 65).square()
+            });
 
             layouter.assign_region(
                 || "s = alpha + k_254 ⋅ 2^130",
@@ -188,9 +194,9 @@ impl Config {
 
     fn s_minus_lo_130(
         &self,
-        mut layouter: impl Layouter<pallas::Base>,
-        s: AssignedCell<pallas::Base, pallas::Base>,
-    ) -> Result<AssignedCell<pallas::Base, pallas::Base>, Error> {
+        mut layouter: impl Layouter<C::Base>,
+        s: AssignedCell<C::Base, C::Base>,
+    ) -> Result<AssignedCell<C::Base, C::Base>, Error> {
         // Number of k-bit words we can use in the lookup decomposition.
         let num_words = 130 / sinsemilla::K;
         assert!(num_words * sinsemilla::K == 130);

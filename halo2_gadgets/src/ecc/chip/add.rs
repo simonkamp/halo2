@@ -2,16 +2,16 @@ use super::EccPoint;
 
 use group::ff::PrimeField;
 use halo2_proofs::{
+    arithmetic::CurveAffine,
     circuit::Region,
     plonk::{Advice, Assigned, Column, ConstraintSystem, Constraints, Error, Expression, Selector},
     poly::Rotation,
 };
-use pasta_curves::pallas;
 
-use std::collections::HashSet;
+use std::{collections::HashSet, marker::PhantomData};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Config {
+pub struct Config<C: CurveAffine> {
     q_add: Selector,
     // lambda
     lambda: Column<Advice>,
@@ -31,12 +31,13 @@ pub struct Config {
     gamma: Column<Advice>,
     // δ = inv0(y_p + y_q) if x_q = x_p, 0 otherwise
     delta: Column<Advice>,
+    _phantom: PhantomData<C>,
 }
 
-impl Config {
+impl<C: CurveAffine> Config<C> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
+        meta: &mut ConstraintSystem<C::Base>,
         x_p: Column<Advice>,
         y_p: Column<Advice>,
         x_qr: Column<Advice>,
@@ -63,6 +64,7 @@ impl Config {
             beta,
             gamma,
             delta,
+            _phantom: PhantomData::default(),
         };
 
         config.create_gate(meta);
@@ -74,7 +76,7 @@ impl Config {
         [self.x_qr, self.y_qr].into_iter().collect()
     }
 
-    fn create_gate(&self, meta: &mut ConstraintSystem<pallas::Base>) {
+    fn create_gate(&self, meta: &mut ConstraintSystem<C::Base>) {
         // https://p.z.cash/halo2-0.1:ecc-complete-addition
         meta.create_gate("complete addition", |meta| {
             let q_add = meta.query_selector(self.q_add);
@@ -112,9 +114,9 @@ impl Config {
             let if_delta = y_q_plus_y_p.clone() * delta;
 
             // Useful constants
-            let one = Expression::Constant(pallas::Base::one());
-            let two = Expression::Constant(pallas::Base::from(2));
-            let three = Expression::Constant(pallas::Base::from(3));
+            let one = Expression::Constant(C::Base::from(1));
+            let two = Expression::Constant(C::Base::from(2));
+            let three = Expression::Constant(C::Base::from(3));
 
             // (x_q − x_p)⋅((x_q − x_p)⋅λ − (y_q−y_p)) = 0
             let poly1 = {
@@ -194,11 +196,11 @@ impl Config {
 
     pub(super) fn assign_region(
         &self,
-        p: &EccPoint,
-        q: &EccPoint,
+        p: &EccPoint<C>,
+        q: &EccPoint<C>,
         offset: usize,
-        region: &mut Region<'_, pallas::Base>,
-    ) -> Result<EccPoint, Error> {
+        region: &mut Region<'_, C::Base>,
+    ) -> Result<EccPoint<C>, Error> {
         // Enable `q_add` selector
         self.q_add.enable(region, offset)?;
 
@@ -255,9 +257,9 @@ impl Config {
                     } else {
                         if !y_p.is_zero_vartime() {
                             // 3(x_p)^2
-                            let three_x_p_sq = x_p.square() * pallas::Base::from(3);
+                            let three_x_p_sq = x_p.square() * C::Base::from(3);
                             // 1 / 2(y_p)
-                            let inv_two_y_p = y_p.invert() * pallas::Base::TWO_INV;
+                            let inv_two_y_p = y_p.invert() * C::Base::TWO_INV;
                             // λ = 3(x_p)^2 / 2(y_p)
                             three_x_p_sq * inv_two_y_p
                         } else {
@@ -336,7 +338,10 @@ pub mod tests {
 
     #[allow(clippy::too_many_arguments)]
     pub fn test_add<
-        EccChip: EccInstructions<pallas::Affine, Point = EccPoint> + Clone + Eq + std::fmt::Debug,
+        EccChip: EccInstructions<pallas::Affine, Point = EccPoint<pallas::Affine>>
+            + Clone
+            + Eq
+            + std::fmt::Debug,
     >(
         chip: EccChip,
         mut layouter: impl Layouter<pallas::Base>,

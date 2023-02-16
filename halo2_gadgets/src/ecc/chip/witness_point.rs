@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use super::{EccPoint, NonIdentityEccPoint};
 
 use group::prime::PrimeCurveAffine;
@@ -10,26 +12,27 @@ use halo2_proofs::{
     },
     poly::Rotation,
 };
-use pasta_curves::{arithmetic::CurveAffine, pallas};
+use pasta_curves::arithmetic::CurveAffine;
 
-type Coordinates = (
-    AssignedCell<Assigned<pallas::Base>, pallas::Base>,
-    AssignedCell<Assigned<pallas::Base>, pallas::Base>,
+type Coordinates<C> = (
+    AssignedCell<Assigned<<C as CurveAffine>::Base>, <C as CurveAffine>::Base>,
+    AssignedCell<Assigned<<C as CurveAffine>::Base>, <C as CurveAffine>::Base>,
 );
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Config {
+pub struct Config<C: CurveAffine> {
     q_point: Selector,
     q_point_non_id: Selector,
     // x-coordinate
     pub x: Column<Advice>,
     // y-coordinate
     pub y: Column<Advice>,
+    _phantom: PhantomData<C>,
 }
 
-impl Config {
+impl<C: CurveAffine> Config<C> {
     pub(super) fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
+        meta: &mut ConstraintSystem<C::Base>,
         x: Column<Advice>,
         y: Column<Advice>,
     ) -> Self {
@@ -38,6 +41,7 @@ impl Config {
             q_point_non_id: meta.selector(),
             x,
             y,
+            _phantom: PhantomData::default(),
         };
 
         config.create_gate(meta);
@@ -45,13 +49,13 @@ impl Config {
         config
     }
 
-    fn create_gate(&self, meta: &mut ConstraintSystem<pallas::Base>) {
-        let curve_eqn = |meta: &mut VirtualCells<pallas::Base>| {
+    fn create_gate(&self, meta: &mut ConstraintSystem<C::Base>) {
+        let curve_eqn = |meta: &mut VirtualCells<C::Base>| {
             let x = meta.query_advice(self.x, Rotation::cur());
             let y = meta.query_advice(self.y, Rotation::cur());
 
             // y^2 = x^3 + b
-            y.square() - (x.clone().square() * x) - Expression::Constant(pallas::Affine::b())
+            y.square() - (x.clone().square() * x) - Expression::Constant(C::b())
         };
 
         // https://p.z.cash/halo2-0.1:ecc-witness-point
@@ -87,10 +91,10 @@ impl Config {
 
     fn assign_xy(
         &self,
-        value: Value<(Assigned<pallas::Base>, Assigned<pallas::Base>)>,
+        value: Value<(Assigned<C::Base>, Assigned<C::Base>)>,
         offset: usize,
-        region: &mut Region<'_, pallas::Base>,
-    ) -> Result<Coordinates, Error> {
+        region: &mut Region<'_, C::Base>,
+    ) -> Result<Coordinates<C>, Error> {
         // Assign `x` value
         let x_val = value.map(|value| value.0);
         let x_var = region.assign_advice(|| "x", self.x, offset, || x_val)?;
@@ -105,16 +109,16 @@ impl Config {
     /// Assigns a point that can be the identity.
     pub(super) fn point(
         &self,
-        value: Value<pallas::Affine>,
+        value: Value<C>,
         offset: usize,
-        region: &mut Region<'_, pallas::Base>,
-    ) -> Result<EccPoint, Error> {
+        region: &mut Region<'_, C::Base>,
+    ) -> Result<EccPoint<C>, Error> {
         // Enable `q_point` selector
         self.q_point.enable(region, offset)?;
 
         let value = value.map(|value| {
             // Map the identity to (0, 0).
-            if value == pallas::Affine::identity() {
+            if value == C::identity() {
                 (Assigned::Zero, Assigned::Zero)
             } else {
                 let value = value.coordinates().unwrap();
@@ -129,15 +133,15 @@ impl Config {
     /// Assigns a non-identity point.
     pub(super) fn point_non_id(
         &self,
-        value: Value<pallas::Affine>,
+        value: Value<C>,
         offset: usize,
-        region: &mut Region<'_, pallas::Base>,
-    ) -> Result<NonIdentityEccPoint, Error> {
+        region: &mut Region<'_, C::Base>,
+    ) -> Result<NonIdentityEccPoint<C>, Error> {
         // Enable `q_point_non_id` selector
         self.q_point_non_id.enable(region, offset)?;
 
         // Return an error if the point is the identity.
-        value.error_if_known_and(|value| value == &pallas::Affine::identity())?;
+        value.error_if_known_and(|value| value == &C::identity())?;
 
         let value = value.map(|value| {
             let value = value.coordinates().unwrap();

@@ -1,5 +1,5 @@
 use super::super::{EccBaseFieldElemFixed, EccPoint, FixedPoints, NUM_WINDOWS, T_P};
-use super::H_BASE;
+use super::h_base;
 
 use crate::utilities::bool_check;
 use crate::{
@@ -7,30 +7,38 @@ use crate::{
     utilities::{bitrange_subset, lookup_range_check::LookupRangeCheckConfig, range_check},
 };
 
+use ff::{Field, PrimeFieldBits};
 use group::ff::PrimeField;
+use halo2_proofs::arithmetic::CurveAffine;
 use halo2_proofs::{
     circuit::{AssignedCell, Layouter},
     plonk::{Advice, Column, ConstraintSystem, Constraints, Error, Expression, Selector},
     poly::Rotation,
 };
-use pasta_curves::pallas;
 
 use std::convert::TryInto;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Config<Fixed: FixedPoints<pallas::Affine>> {
+pub struct Config<C: CurveAffine, Fixed: FixedPoints<C>>
+where
+    C::Base: PrimeFieldBits,
+{
     q_mul_fixed_base_field: Selector,
     canon_advices: [Column<Advice>; 3],
-    lookup_config: LookupRangeCheckConfig<pallas::Base, { sinsemilla::K }>,
-    super_config: super::Config<Fixed>,
+    lookup_config: LookupRangeCheckConfig<C::Base, { sinsemilla::K }>,
+    super_config: super::Config<C, Fixed>,
 }
 
-impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
+impl<C: CurveAffine, Fixed: FixedPoints<C>> Config<C, Fixed>
+where
+    C::Base: PrimeFieldBits + PrimeField<Repr = <C::Scalar as PrimeField>::Repr>,
+    C::Scalar: PrimeFieldBits,
+{
     pub(crate) fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
+        meta: &mut ConstraintSystem<C::Base>,
         canon_advices: [Column<Advice>; 3],
-        lookup_config: LookupRangeCheckConfig<pallas::Base, { sinsemilla::K }>,
-        super_config: super::Config<Fixed>,
+        lookup_config: LookupRangeCheckConfig<C::Base, { sinsemilla::K }>,
+        super_config: super::Config<C, Fixed>,
     ) -> Self {
         for advice in canon_advices.iter() {
             meta.enable_equality(*advice);
@@ -56,7 +64,7 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
         config
     }
 
-    fn create_gate(&self, meta: &mut ConstraintSystem<pallas::Base>) {
+    fn create_gate(&self, meta: &mut ConstraintSystem<C::Base>) {
         // Check that the base field element is canonical.
         // https://p.z.cash/halo2-0.1:ecc-fixed-mul-base-canonicity
         meta.create_gate("Canonicity checks", |meta| {
@@ -71,7 +79,7 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
             //
             // α_0 is derived, not witnessed.
             let alpha_0 = {
-                let two_pow_252 = pallas::Base::from_u128(1 << 126).square();
+                let two_pow_252 = C::Base::from_u128(1 << 126).square();
                 alpha - (z_84_alpha.clone() * two_pow_252)
             };
             let alpha_1 = meta.query_advice(self.canon_advices[1], Rotation::cur());
@@ -89,7 +97,7 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
                 let alpha_2_range_check = bool_check(alpha_2.clone());
                 // Check that α_1 + 2^2 α_2 = z_84_alpha
                 let z_84_alpha_check = z_84_alpha.clone()
-                    - (alpha_1.clone() + alpha_2.clone() * pallas::Base::from(1 << 2));
+                    - (alpha_1.clone() + alpha_2.clone() * C::Base::from(1 << 2));
 
                 std::iter::empty()
                     .chain(Some(("alpha_1_range_check", alpha_1_range_check)))
@@ -99,8 +107,8 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
 
             // Check α_0_prime = α_0 + 2^130 - t_p
             let alpha_0_prime_check = {
-                let two_pow_130 = Expression::Constant(pallas::Base::from_u128(1 << 65).square());
-                let t_p = Expression::Constant(pallas::Base::from_u128(T_P));
+                let two_pow_130 = Expression::Constant(C::Base::from_u128(1 << 65).square());
+                let t_p = Expression::Constant(C::Base::from_u128(T_P));
                 alpha_0_prime - (alpha_0 + two_pow_130 - t_p)
             };
 
@@ -127,12 +135,11 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
             let canon_checks = {
                 // alpha_0_hi_120 = z_44 - 2^120 z_84
                 let alpha_0_hi_120 = {
-                    let two_pow_120 =
-                        Expression::Constant(pallas::Base::from_u128(1 << 60).square());
+                    let two_pow_120 = Expression::Constant(C::Base::from_u128(1 << 60).square());
                     z_44_alpha.clone() - z_84_alpha * two_pow_120
                 };
                 // a_43 = z_43 - (2^3)z_44
-                let a_43 = z_43_alpha - z_44_alpha * *H_BASE;
+                let a_43 = z_43_alpha - z_44_alpha * h_base::<C>();
 
                 std::iter::empty()
                     .chain(Some(("MSB = 1 => alpha_1 = 0", alpha_2.clone() * alpha_1)))
@@ -161,12 +168,12 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
 
     pub fn assign(
         &self,
-        mut layouter: impl Layouter<pallas::Base>,
-        scalar: AssignedCell<pallas::Base, pallas::Base>,
-        base: &<Fixed as FixedPoints<pallas::Affine>>::Base,
-    ) -> Result<EccPoint, Error>
+        mut layouter: impl Layouter<C::Base>,
+        scalar: AssignedCell<C::Base, C::Base>,
+        base: &<Fixed as FixedPoints<C>>::Base,
+    ) -> Result<EccPoint<C>, Error>
     where
-        <Fixed as FixedPoints<pallas::Affine>>::Base: super::super::FixedPoint<pallas::Affine>,
+        <Fixed as FixedPoints<C>>::Base: super::super::FixedPoint<C>,
     {
         let (scalar, acc, mul_b) = layouter.assign_region(
             || "Base-field elem fixed-base mul (incomplete addition)",
@@ -180,7 +187,7 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
                         offset,
                         scalar.clone(),
                         true,
-                        pallas::Base::NUM_BITS as usize,
+                        C::Base::NUM_BITS as usize,
                         NUM_WINDOWS,
                     )?;
                     EccBaseFieldElemFixed {
@@ -223,7 +230,7 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
             let scalar = &scalar
                 .base_field_elem()
                 .value()
-                .map(|scalar| pallas::Scalar::from_repr(scalar.to_repr()).unwrap());
+                .map(|scalar| C::Scalar::from_repr(scalar.to_repr()).unwrap());
             let real_mul = scalar.map(|scalar| base.generator() * scalar);
             let result = result.point();
 
@@ -232,6 +239,7 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
                 .assert_if_known(|(real_mul, result)| &real_mul.to_affine() == result);
         }
 
+        // todo
         // We want to enforce canonicity of a 255-bit base field element, α.
         // That is, we want to check that 0 ≤ α < p, where p is Pallas base
         // field modulus p = 2^254 + t_p
@@ -261,15 +269,15 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
             .value()
             .zip(z_84_alpha.value())
             .map(|(alpha, z_84_alpha)| {
-                let two_pow_252 = pallas::Base::from_u128(1 << 126).square();
-                alpha - z_84_alpha * two_pow_252
+                let two_pow_252 = C::Base::from_u128(1 << 126).square();
+                *alpha - *z_84_alpha * two_pow_252
             });
 
         let (alpha_0_prime, z_13_alpha_0_prime) = {
             // alpha_0_prime = alpha + 2^130 - t_p.
             let alpha_0_prime = alpha_0.map(|alpha_0| {
-                let two_pow_130 = pallas::Base::from_u128(1 << 65).square();
-                let t_p = pallas::Base::from_u128(T_P);
+                let two_pow_130 = C::Base::from_u128(1 << 65).square();
+                let t_p = C::Base::from_u128(T_P);
                 alpha_0 + two_pow_130 - t_p
             });
             let zs = self.lookup_config.witness_check(
@@ -398,7 +406,7 @@ pub mod tests {
     };
 
     pub(crate) fn test_mul_fixed_base_field(
-        chip: EccChip<TestFixedBases>,
+        chip: EccChip<pallas::Affine, TestFixedBases>,
         mut layouter: impl Layouter<pallas::Base>,
     ) -> Result<(), Error> {
         test_single_base(
@@ -411,9 +419,9 @@ pub mod tests {
 
     #[allow(clippy::op_ref)]
     fn test_single_base(
-        chip: EccChip<TestFixedBases>,
+        chip: EccChip<pallas::Affine, TestFixedBases>,
         mut layouter: impl Layouter<pallas::Base>,
-        base: FixedPointBaseField<pallas::Affine, EccChip<TestFixedBases>>,
+        base: FixedPointBaseField<pallas::Affine, EccChip<pallas::Affine, TestFixedBases>>,
         base_val: pallas::Affine,
     ) -> Result<(), Error> {
         let rng = OsRng;
@@ -421,11 +429,11 @@ pub mod tests {
         let column = chip.config().advices[0];
 
         fn constrain_equal_non_id(
-            chip: EccChip<TestFixedBases>,
+            chip: EccChip<pallas::Affine, TestFixedBases>,
             mut layouter: impl Layouter<pallas::Base>,
             base_val: pallas::Affine,
             scalar_val: pallas::Base,
-            result: Point<pallas::Affine, EccChip<TestFixedBases>>,
+            result: Point<pallas::Affine, EccChip<pallas::Affine, TestFixedBases>>,
         ) -> Result<(), Error> {
             // Move scalar from base field into scalar field (which always fits for Pallas).
             let scalar = pallas::Scalar::from_repr(scalar_val.to_repr()).unwrap();

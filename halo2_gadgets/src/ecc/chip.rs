@@ -7,13 +7,12 @@ use crate::{
 };
 use arrayvec::ArrayVec;
 
-use ff::PrimeField;
-use group::prime::PrimeCurveAffine;
+use ff::{PrimeField, PrimeFieldBits};
 use halo2_proofs::{
     circuit::{AssignedCell, Chip, Layouter, Value},
     plonk::{Advice, Assigned, Column, ConstraintSystem, Error, Fixed},
 };
-use pasta_curves::{arithmetic::CurveAffine, pallas};
+use pasta_curves::arithmetic::CurveAffine;
 
 use std::convert::TryInto;
 
@@ -33,46 +32,46 @@ pub(crate) use mul::incomplete::DoubleAndAdd;
 /// identity represented as (0, 0).
 /// Each coordinate is assigned to a cell.
 #[derive(Clone, Debug)]
-pub struct EccPoint {
+pub struct EccPoint<C: CurveAffine> {
     /// x-coordinate
     ///
     /// Stored as an `Assigned<F>` to enable batching inversions.
-    x: AssignedCell<Assigned<pallas::Base>, pallas::Base>,
+    x: AssignedCell<Assigned<C::Base>, C::Base>,
     /// y-coordinate
     ///
     /// Stored as an `Assigned<F>` to enable batching inversions.
-    y: AssignedCell<Assigned<pallas::Base>, pallas::Base>,
+    y: AssignedCell<Assigned<C::Base>, C::Base>,
 }
 
-impl EccPoint {
+impl<C: CurveAffine> EccPoint<C> {
     /// Constructs a point from its coordinates, without checking they are on the curve.
     ///
     /// This is an internal API that we only use where we know we have a valid curve point.
     pub(crate) fn from_coordinates_unchecked(
-        x: AssignedCell<Assigned<pallas::Base>, pallas::Base>,
-        y: AssignedCell<Assigned<pallas::Base>, pallas::Base>,
+        x: AssignedCell<Assigned<C::Base>, C::Base>,
+        y: AssignedCell<Assigned<C::Base>, C::Base>,
     ) -> Self {
         EccPoint { x, y }
     }
 
     /// Returns the value of this curve point, if known.
-    pub fn point(&self) -> Value<pallas::Affine> {
+    pub fn point(&self) -> Value<C> {
         self.x.value().zip(self.y.value()).map(|(x, y)| {
             if x.is_zero_vartime() && y.is_zero_vartime() {
-                pallas::Affine::identity()
+                C::identity()
             } else {
-                pallas::Affine::from_xy(x.evaluate(), y.evaluate()).unwrap()
+                C::from_xy(x.evaluate(), y.evaluate()).unwrap()
             }
         })
     }
     /// The cell containing the affine short-Weierstrass x-coordinate,
     /// or 0 for the zero point.
-    pub fn x(&self) -> AssignedCell<pallas::Base, pallas::Base> {
+    pub fn x(&self) -> AssignedCell<C::Base, C::Base> {
         self.x.clone().evaluate()
     }
     /// The cell containing the affine short-Weierstrass y-coordinate,
     /// or 0 for the zero point.
-    pub fn y(&self) -> AssignedCell<pallas::Base, pallas::Base> {
+    pub fn y(&self) -> AssignedCell<C::Base, C::Base> {
         self.y.clone().evaluate()
     }
 
@@ -85,48 +84,48 @@ impl EccPoint {
 /// A non-identity point represented in affine (x, y) coordinates.
 /// Each coordinate is assigned to a cell.
 #[derive(Clone, Debug)]
-pub struct NonIdentityEccPoint {
+pub struct NonIdentityEccPoint<C: CurveAffine> {
     /// x-coordinate
     ///
     /// Stored as an `Assigned<F>` to enable batching inversions.
-    x: AssignedCell<Assigned<pallas::Base>, pallas::Base>,
+    x: AssignedCell<Assigned<C::Base>, C::Base>,
     /// y-coordinate
     ///
     /// Stored as an `Assigned<F>` to enable batching inversions.
-    y: AssignedCell<Assigned<pallas::Base>, pallas::Base>,
+    y: AssignedCell<Assigned<C::Base>, C::Base>,
 }
 
-impl NonIdentityEccPoint {
+impl<C: CurveAffine> NonIdentityEccPoint<C> {
     /// Constructs a point from its coordinates, without checking they are on the curve.
     ///
     /// This is an internal API that we only use where we know we have a valid non-identity
     /// curve point.
     pub(crate) fn from_coordinates_unchecked(
-        x: AssignedCell<Assigned<pallas::Base>, pallas::Base>,
-        y: AssignedCell<Assigned<pallas::Base>, pallas::Base>,
+        x: AssignedCell<Assigned<C::Base>, C::Base>,
+        y: AssignedCell<Assigned<C::Base>, C::Base>,
     ) -> Self {
         NonIdentityEccPoint { x, y }
     }
 
     /// Returns the value of this curve point, if known.
-    pub fn point(&self) -> Value<pallas::Affine> {
+    pub fn point(&self) -> Value<C> {
         self.x.value().zip(self.y.value()).map(|(x, y)| {
             assert!(!x.is_zero_vartime() && !y.is_zero_vartime());
-            pallas::Affine::from_xy(x.evaluate(), y.evaluate()).unwrap()
+            C::from_xy(x.evaluate(), y.evaluate()).unwrap()
         })
     }
     /// The cell containing the affine short-Weierstrass x-coordinate.
-    pub fn x(&self) -> AssignedCell<pallas::Base, pallas::Base> {
+    pub fn x(&self) -> AssignedCell<C::Base, C::Base> {
         self.x.clone().evaluate()
     }
     /// The cell containing the affine short-Weierstrass y-coordinate.
-    pub fn y(&self) -> AssignedCell<pallas::Base, pallas::Base> {
+    pub fn y(&self) -> AssignedCell<C::Base, C::Base> {
         self.y.clone().evaluate()
     }
 }
 
-impl From<NonIdentityEccPoint> for EccPoint {
-    fn from(non_id_point: NonIdentityEccPoint) -> Self {
+impl<C: CurveAffine> From<NonIdentityEccPoint<C>> for EccPoint<C> {
+    fn from(non_id_point: NonIdentityEccPoint<C>) -> Self {
         Self {
             x: non_id_point.x,
             y: non_id_point.y,
@@ -137,31 +136,36 @@ impl From<NonIdentityEccPoint> for EccPoint {
 /// Configuration for [`EccChip`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(non_snake_case)]
-pub struct EccConfig<FixedPoints: super::FixedPoints<pallas::Affine>> {
+pub struct EccConfig<C: CurveAffine, FixedPoints: super::FixedPoints<C>>
+where
+    C::Base: PrimeFieldBits,
+    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
+    C::Base: PrimeField<Repr = [u8; 32]>,
+{
     /// Advice columns needed by instructions in the ECC chip.
     pub advices: [Column<Advice>; 10],
 
     /// Incomplete addition
-    add_incomplete: add_incomplete::Config,
+    add_incomplete: add_incomplete::Config<C>,
 
     /// Complete addition
-    add: add::Config,
+    add: add::Config<C>,
 
     /// Variable-base scalar multiplication
-    mul: mul::Config,
+    mul: mul::Config<C>,
 
     /// Fixed-base full-width scalar multiplication
-    mul_fixed_full: mul_fixed::full_width::Config<FixedPoints>,
+    mul_fixed_full: mul_fixed::full_width::Config<C, FixedPoints>,
     /// Fixed-base signed short scalar multiplication
-    mul_fixed_short: mul_fixed::short::Config<FixedPoints>,
+    mul_fixed_short: mul_fixed::short::Config<C, FixedPoints>,
     /// Fixed-base mul using a base field element as a scalar
-    mul_fixed_base_field: mul_fixed::base_field_elem::Config<FixedPoints>,
+    mul_fixed_base_field: mul_fixed::base_field_elem::Config<C, FixedPoints>,
 
     /// Witness point
-    witness_point: witness_point::Config,
+    witness_point: witness_point::Config<C>,
 
     /// Lookup range check using 10-bit lookup table
-    pub lookup_config: LookupRangeCheckConfig<pallas::Base, { sinsemilla::K }>,
+    pub lookup_config: LookupRangeCheckConfig<C::Base, { sinsemilla::K }>,
 }
 
 /// A trait representing the kind of scalar used with a particular `FixedPoint`.
@@ -227,12 +231,22 @@ pub trait FixedPoint<C: CurveAffine>: std::fmt::Debug + Eq + Clone {
 
 /// An [`EccInstructions`] chip that uses 10 advice columns.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EccChip<FixedPoints: super::FixedPoints<pallas::Affine>> {
-    config: EccConfig<FixedPoints>,
+pub struct EccChip<C: CurveAffine, FixedPoints: super::FixedPoints<C>>
+where
+    C::Base: PrimeFieldBits,
+    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
+    C::Base: PrimeField<Repr = [u8; 32]>,
+{
+    config: EccConfig<C, FixedPoints>,
 }
 
-impl<FixedPoints: super::FixedPoints<pallas::Affine>> Chip<pallas::Base> for EccChip<FixedPoints> {
-    type Config = EccConfig<FixedPoints>;
+impl<C: CurveAffine, FixedPoints: super::FixedPoints<C>> Chip<C::Base> for EccChip<C, FixedPoints>
+where
+    C::Base: PrimeFieldBits,
+    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
+    C::Base: PrimeField<Repr = [u8; 32]>,
+{
+    type Config = EccConfig<C, FixedPoints>;
     type Loaded = ();
 
     fn config(&self) -> &Self::Config {
@@ -244,15 +258,24 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Chip<pallas::Base> for Ecc
     }
 }
 
-impl<Fixed: super::FixedPoints<pallas::Affine>> UtilitiesInstructions<pallas::Base>
-    for EccChip<Fixed>
+impl<C: CurveAffine, Fixed: super::FixedPoints<C>> UtilitiesInstructions<C::Base>
+    for EccChip<C, Fixed>
+where
+    C::Base: PrimeFieldBits,
+    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
+    C::Base: PrimeField<Repr = [u8; 32]>,
 {
-    type Var = AssignedCell<pallas::Base, pallas::Base>;
+    type Var = AssignedCell<C::Base, C::Base>;
 }
 
-impl<FixedPoints: super::FixedPoints<pallas::Affine>> EccChip<FixedPoints> {
+impl<C: CurveAffine, FixedPoints: super::FixedPoints<C>> EccChip<C, FixedPoints>
+where
+    C::Base: PrimeFieldBits,
+    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
+    C::Base: PrimeField<Repr = [u8; 32]>,
+{
     /// Reconstructs this chip from the given config.
-    pub fn construct(config: <Self as Chip<pallas::Base>>::Config) -> Self {
+    pub fn construct(config: <Self as Chip<C::Base>>::Config) -> Self {
         Self { config }
     }
 
@@ -261,11 +284,11 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> EccChip<FixedPoints> {
     /// All columns in `advices` will be equality-enabled.
     #[allow(non_snake_case)]
     pub fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
+        meta: &mut ConstraintSystem<C::Base>,
         advices: [Column<Advice>; 10],
         lagrange_coeffs: [Column<Fixed>; 8],
-        range_check: LookupRangeCheckConfig<pallas::Base, { sinsemilla::K }>,
-    ) -> <Self as Chip<pallas::Base>>::Config {
+        range_check: LookupRangeCheckConfig<C::Base, { sinsemilla::K }>,
+    ) -> <Self as Chip<C::Base>>::Config {
         // Create witness point gate
         let witness_point = witness_point::Config::configure(meta, advices[0], advices[1]);
         // Create incomplete point addition gate
@@ -283,7 +306,7 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> EccChip<FixedPoints> {
 
         // Create config that is shared across short, base-field, and full-width
         // fixed-base scalar mul.
-        let mul_fixed = mul_fixed::Config::<FixedPoints>::configure(
+        let mul_fixed = mul_fixed::Config::<C, FixedPoints>::configure(
             meta,
             lagrange_coeffs,
             advices[4],
@@ -294,14 +317,14 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> EccChip<FixedPoints> {
 
         // Create gate that is only used in full-width fixed-base scalar mul.
         let mul_fixed_full =
-            mul_fixed::full_width::Config::<FixedPoints>::configure(meta, mul_fixed.clone());
+            mul_fixed::full_width::Config::<C, FixedPoints>::configure(meta, mul_fixed.clone());
 
         // Create gate that is only used in short fixed-base scalar mul.
         let mul_fixed_short =
-            mul_fixed::short::Config::<FixedPoints>::configure(meta, mul_fixed.clone());
+            mul_fixed::short::Config::<C, FixedPoints>::configure(meta, mul_fixed.clone());
 
         // Create gate that is only used in fixed-base mul using a base field element.
-        let mul_fixed_base_field = mul_fixed::base_field_elem::Config::<FixedPoints>::configure(
+        let mul_fixed_base_field = mul_fixed::base_field_elem::Config::<C, FixedPoints>::configure(
             meta,
             advices[6..9].try_into().unwrap(),
             range_check,
@@ -328,18 +351,18 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> EccChip<FixedPoints> {
 /// where `scalar = k_0 + k_1 * (2^3) + ... + k_84 * (2^3)^84` and
 /// each `k_i` is in the range [0..2^3).
 #[derive(Clone, Debug)]
-pub struct EccScalarFixed {
-    value: Value<pallas::Scalar>,
+pub struct EccScalarFixed<C: CurveAffine> {
+    value: Value<C::Scalar>,
     /// The circuit-assigned windows representing this scalar, or `None` if the scalar has
     /// not been used yet.
-    windows: Option<ArrayVec<AssignedCell<pallas::Base, pallas::Base>, { NUM_WINDOWS }>>,
+    windows: Option<ArrayVec<AssignedCell<C::Base, C::Base>, { NUM_WINDOWS }>>,
 }
 
 // TODO: Make V a `u64`
-type MagnitudeCell = AssignedCell<pallas::Base, pallas::Base>;
+type MagnitudeCell<C> = AssignedCell<<C as CurveAffine>::Base, <C as CurveAffine>::Base>;
 // TODO: Make V an enum Sign { Positive, Negative }
-type SignCell = AssignedCell<pallas::Base, pallas::Base>;
-type MagnitudeSign = (MagnitudeCell, SignCell);
+type SignCell<C> = AssignedCell<<C as CurveAffine>::Base, <C as CurveAffine>::Base>;
+type MagnitudeSign<C> = (MagnitudeCell<C>, SignCell<C>);
 
 /// A signed short scalar used for fixed-base scalar multiplication.
 /// A short scalar must have magnitude in the range [0..2^64), with
@@ -354,13 +377,12 @@ type MagnitudeSign = (MagnitudeCell, SignCell);
 /// each `k_i` is in the range [0..2^3).
 /// k_21 must be a single bit, i.e. 0 or 1.
 #[derive(Clone, Debug)]
-pub struct EccScalarFixedShort {
-    magnitude: MagnitudeCell,
-    sign: SignCell,
+pub struct EccScalarFixedShort<C: CurveAffine> {
+    magnitude: MagnitudeCell<C>,
+    sign: SignCell<C>,
     /// The circuit-assigned running sum constraining this signed short scalar, or `None`
     /// if the scalar has not been used yet.
-    running_sum:
-        Option<ArrayVec<AssignedCell<pallas::Base, pallas::Base>, { NUM_WINDOWS_SHORT + 1 }>>,
+    running_sum: Option<ArrayVec<AssignedCell<C::Base, C::Base>, { NUM_WINDOWS_SHORT + 1 }>>,
 }
 
 /// A base field element used for fixed-base scalar multiplication.
@@ -373,14 +395,14 @@ pub struct EccScalarFixedShort {
 /// Since z_0 is initialized as the scalar α, we store it as
 /// `base_field_elem`.
 #[derive(Clone, Debug)]
-struct EccBaseFieldElemFixed {
-    base_field_elem: AssignedCell<pallas::Base, pallas::Base>,
-    running_sum: ArrayVec<AssignedCell<pallas::Base, pallas::Base>, { NUM_WINDOWS + 1 }>,
+struct EccBaseFieldElemFixed<C: CurveAffine> {
+    base_field_elem: AssignedCell<C::Base, C::Base>,
+    running_sum: ArrayVec<AssignedCell<C::Base, C::Base>, { NUM_WINDOWS + 1 }>,
 }
 
-impl EccBaseFieldElemFixed {
+impl<C: CurveAffine> EccBaseFieldElemFixed<C> {
     #![allow(dead_code)]
-    fn base_field_elem(&self) -> AssignedCell<pallas::Base, pallas::Base> {
+    fn base_field_elem(&self) -> AssignedCell<C::Base, C::Base> {
         self.base_field_elem.clone()
     }
 }
@@ -388,7 +410,8 @@ impl EccBaseFieldElemFixed {
 /// An enumeration of the possible types of scalars used in variable-base
 /// multiplication.
 #[derive(Clone, Debug)]
-pub enum ScalarVar {
+pub enum ScalarVar<C: CurveAffine> {
+    // todo check semantics of changing to vesta! Maybe it has to stay pallas?
     /// An element of the elliptic curve's base field, that is used as a scalar
     /// in variable-base scalar mul.
     ///
@@ -402,31 +425,32 @@ pub enum ScalarVar {
     /// [4.2.3 Orchard Key Components][orchardkeycomponents].)
     ///
     /// [orchardkeycomponents]: https://zips.z.cash/protocol/protocol.pdf#orchardkeycomponents
-    BaseFieldElem(AssignedCell<pallas::Base, pallas::Base>),
+    BaseFieldElem(AssignedCell<C::Base, C::Base>),
     /// A full-width scalar. This is unimplemented for halo2_gadgets v0.1.0.
     FullWidth,
 }
 
-impl<Fixed: FixedPoints<pallas::Affine>> EccInstructions<pallas::Affine> for EccChip<Fixed>
+impl<C: CurveAffine, Fixed: FixedPoints<C>> EccInstructions<C> for EccChip<C, Fixed>
 where
-    <Fixed as FixedPoints<pallas::Affine>>::Base:
-        FixedPoint<pallas::Affine, FixedScalarKind = BaseFieldElem>,
-    <Fixed as FixedPoints<pallas::Affine>>::FullScalar:
-        FixedPoint<pallas::Affine, FixedScalarKind = FullScalar>,
-    <Fixed as FixedPoints<pallas::Affine>>::ShortScalar:
-        FixedPoint<pallas::Affine, FixedScalarKind = ShortScalar>,
+    <Fixed as FixedPoints<C>>::Base: FixedPoint<C, FixedScalarKind = BaseFieldElem>,
+    <Fixed as FixedPoints<C>>::FullScalar: FixedPoint<C, FixedScalarKind = FullScalar>,
+    <Fixed as FixedPoints<C>>::ShortScalar: FixedPoint<C, FixedScalarKind = ShortScalar>,
+    C::Base: PrimeFieldBits,
+    C::ScalarExt: PrimeFieldBits,
+    C::ScalarExt: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
+    C::Base: PrimeField<Repr = [u8; 32]>,
 {
-    type ScalarFixed = EccScalarFixed;
-    type ScalarFixedShort = EccScalarFixedShort;
-    type ScalarVar = ScalarVar;
-    type Point = EccPoint;
-    type NonIdentityPoint = NonIdentityEccPoint;
-    type X = AssignedCell<pallas::Base, pallas::Base>;
+    type ScalarFixed = EccScalarFixed<C>;
+    type ScalarFixedShort = EccScalarFixedShort<C>;
+    type ScalarVar = ScalarVar<C>;
+    type Point = EccPoint<C>;
+    type NonIdentityPoint = NonIdentityEccPoint<C>;
+    type X = AssignedCell<C::Base, C::Base>;
     type FixedPoints = Fixed;
 
     fn constrain_equal(
         &self,
-        layouter: &mut impl Layouter<pallas::Base>,
+        layouter: &mut impl Layouter<C::Base>,
         a: &Self::Point,
         b: &Self::Point,
     ) -> Result<(), Error> {
@@ -443,8 +467,8 @@ where
 
     fn witness_point(
         &self,
-        layouter: &mut impl Layouter<pallas::Base>,
-        value: Value<pallas::Affine>,
+        layouter: &mut impl Layouter<C::Base>,
+        value: Value<C>,
     ) -> Result<Self::Point, Error> {
         let config = self.config().witness_point;
         layouter.assign_region(
@@ -455,8 +479,8 @@ where
 
     fn witness_point_non_id(
         &self,
-        layouter: &mut impl Layouter<pallas::Base>,
-        value: Value<pallas::Affine>,
+        layouter: &mut impl Layouter<C::Base>,
+        value: Value<C>,
     ) -> Result<Self::NonIdentityPoint, Error> {
         let config = self.config().witness_point;
         layouter.assign_region(
@@ -467,8 +491,8 @@ where
 
     fn witness_scalar_var(
         &self,
-        _layouter: &mut impl Layouter<pallas::Base>,
-        _value: Value<pallas::Scalar>,
+        _layouter: &mut impl Layouter<C::Base>,
+        _value: Value<C::Scalar>,
     ) -> Result<Self::ScalarVar, Error> {
         // This is unimplemented for halo2_gadgets v0.1.0.
         todo!()
@@ -476,8 +500,8 @@ where
 
     fn witness_scalar_fixed(
         &self,
-        _layouter: &mut impl Layouter<pallas::Base>,
-        value: Value<pallas::Scalar>,
+        _layouter: &mut impl Layouter<C::Base>,
+        value: Value<C::Scalar>,
     ) -> Result<Self::ScalarFixed, Error> {
         Ok(EccScalarFixed {
             value,
@@ -488,8 +512,8 @@ where
 
     fn scalar_fixed_from_signed_short(
         &self,
-        _layouter: &mut impl Layouter<pallas::Base>,
-        (magnitude, sign): MagnitudeSign,
+        _layouter: &mut impl Layouter<C::Base>,
+        (magnitude, sign): MagnitudeSign<C>,
     ) -> Result<Self::ScalarFixedShort, Error> {
         Ok(EccScalarFixedShort {
             magnitude,
@@ -500,13 +524,13 @@ where
     }
 
     fn extract_p<Point: Into<Self::Point> + Clone>(point: &Point) -> Self::X {
-        let point: EccPoint = (point.clone()).into();
+        let point: EccPoint<C> = (point.clone()).into();
         point.x()
     }
 
     fn add_incomplete(
         &self,
-        layouter: &mut impl Layouter<pallas::Base>,
+        layouter: &mut impl Layouter<C::Base>,
         a: &Self::NonIdentityPoint,
         b: &Self::NonIdentityPoint,
     ) -> Result<Self::NonIdentityPoint, Error> {
@@ -519,7 +543,7 @@ where
 
     fn add<A: Into<Self::Point> + Clone, B: Into<Self::Point> + Clone>(
         &self,
-        layouter: &mut impl Layouter<pallas::Base>,
+        layouter: &mut impl Layouter<C::Base>,
         a: &A,
         b: &B,
     ) -> Result<Self::Point, Error> {
@@ -534,7 +558,7 @@ where
 
     fn mul(
         &self,
-        layouter: &mut impl Layouter<pallas::Base>,
+        layouter: &mut impl Layouter<C::Base>,
         scalar: &Self::ScalarVar,
         base: &Self::NonIdentityPoint,
     ) -> Result<(Self::Point, Self::ScalarVar), Error> {
@@ -553,9 +577,9 @@ where
 
     fn mul_fixed(
         &self,
-        layouter: &mut impl Layouter<pallas::Base>,
+        layouter: &mut impl Layouter<C::Base>,
         scalar: &Self::ScalarFixed,
-        base: &<Self::FixedPoints as FixedPoints<pallas::Affine>>::FullScalar,
+        base: &<Self::FixedPoints as FixedPoints<C>>::FullScalar,
     ) -> Result<(Self::Point, Self::ScalarFixed), Error> {
         let config = self.config().mul_fixed_full.clone();
         config.assign(
@@ -567,9 +591,9 @@ where
 
     fn mul_fixed_short(
         &self,
-        layouter: &mut impl Layouter<pallas::Base>,
+        layouter: &mut impl Layouter<C::Base>,
         scalar: &Self::ScalarFixedShort,
-        base: &<Self::FixedPoints as FixedPoints<pallas::Affine>>::ShortScalar,
+        base: &<Self::FixedPoints as FixedPoints<C>>::ShortScalar,
     ) -> Result<(Self::Point, Self::ScalarFixedShort), Error> {
         let config = self.config().mul_fixed_short.clone();
         config.assign(
@@ -581,9 +605,9 @@ where
 
     fn mul_fixed_base_field_elem(
         &self,
-        layouter: &mut impl Layouter<pallas::Base>,
-        base_field_elem: AssignedCell<pallas::Base, pallas::Base>,
-        base: &<Self::FixedPoints as FixedPoints<pallas::Affine>>::Base,
+        layouter: &mut impl Layouter<C::Base>,
+        base_field_elem: AssignedCell<C::Base, C::Base>,
+        base: &<Self::FixedPoints as FixedPoints<C>>::Base,
     ) -> Result<Self::Point, Error> {
         let config = self.config().mul_fixed_base_field.clone();
         config.assign(
@@ -594,19 +618,18 @@ where
     }
 }
 
-impl<Fixed: FixedPoints<pallas::Affine>> BaseFitsInScalarInstructions<pallas::Affine>
-    for EccChip<Fixed>
+impl<C: CurveAffine, Fixed: FixedPoints<C>> BaseFitsInScalarInstructions<C> for EccChip<C, Fixed>
 where
-    <Fixed as FixedPoints<pallas::Affine>>::Base:
-        FixedPoint<pallas::Affine, FixedScalarKind = BaseFieldElem>,
-    <Fixed as FixedPoints<pallas::Affine>>::FullScalar:
-        FixedPoint<pallas::Affine, FixedScalarKind = FullScalar>,
-    <Fixed as FixedPoints<pallas::Affine>>::ShortScalar:
-        FixedPoint<pallas::Affine, FixedScalarKind = ShortScalar>,
+    <Fixed as FixedPoints<C>>::Base: FixedPoint<C, FixedScalarKind = BaseFieldElem>,
+    <Fixed as FixedPoints<C>>::FullScalar: FixedPoint<C, FixedScalarKind = FullScalar>,
+    <Fixed as FixedPoints<C>>::ShortScalar: FixedPoint<C, FixedScalarKind = ShortScalar>,
+    C::Base: PrimeFieldBits,
+    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
+    C::Base: PrimeField<Repr = [u8; 32]>,
 {
     fn scalar_var_from_base(
         &self,
-        _layouter: &mut impl Layouter<pallas::Base>,
+        _layouter: &mut impl Layouter<C::Base>,
         base: &Self::Var,
     ) -> Result<Self::ScalarVar, Error> {
         Ok(ScalarVar::BaseFieldElem(base.clone()))

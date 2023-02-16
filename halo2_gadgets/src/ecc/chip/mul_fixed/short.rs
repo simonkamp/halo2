@@ -3,24 +3,33 @@ use std::convert::TryInto;
 use super::super::{EccPoint, EccScalarFixedShort, FixedPoints, L_SCALAR_SHORT, NUM_WINDOWS_SHORT};
 use crate::{ecc::chip::MagnitudeSign, utilities::bool_check};
 
+use ff::{Field, PrimeField, PrimeFieldBits};
 use halo2_proofs::{
+    arithmetic::CurveAffine,
     circuit::{Layouter, Region},
     plonk::{ConstraintSystem, Constraints, Error, Expression, Selector},
     poly::Rotation,
 };
-use pasta_curves::pallas;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Config<Fixed: FixedPoints<pallas::Affine>> {
+pub struct Config<C: CurveAffine, Fixed: FixedPoints<C>>
+where
+    C::Base: PrimeFieldBits,
+    C::Scalar: PrimeFieldBits,
+{
     // Selector used for fixed-base scalar mul with short signed exponent.
     q_mul_fixed_short: Selector,
-    super_config: super::Config<Fixed>,
+    super_config: super::Config<C, Fixed>,
 }
 
-impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
+impl<C: CurveAffine, Fixed: FixedPoints<C>> Config<C, Fixed>
+where
+    C::Base: PrimeFieldBits + PrimeField<Repr = <C::Scalar as PrimeField>::Repr>,
+    C::Scalar: PrimeFieldBits,
+{
     pub(crate) fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
-        super_config: super::Config<Fixed>,
+        meta: &mut ConstraintSystem<C::Base>,
+        super_config: super::Config<C, Fixed>,
     ) -> Self {
         let config = Self {
             q_mul_fixed_short: meta.selector(),
@@ -32,7 +41,7 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
         config
     }
 
-    fn create_gate(&self, meta: &mut ConstraintSystem<pallas::Base>) {
+    fn create_gate(&self, meta: &mut ConstraintSystem<C::Base>) {
         // Gate contains the following constraints:
         // - https://p.z.cash/halo2-0.1:ecc-fixed-mul-short-msb
         // - https://p.z.cash/halo2-0.1:ecc-fixed-mul-short-conditional-neg
@@ -44,7 +53,7 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
             let last_window = meta.query_advice(self.super_config.u, Rotation::cur());
             let sign = meta.query_advice(self.super_config.window, Rotation::cur());
 
-            let one = Expression::Constant(pallas::Base::one());
+            let one = Expression::Constant(C::Base::ONE);
 
             // Check that last window is either 0 or 1.
             let last_window_check = bool_check(last_window);
@@ -82,10 +91,10 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
     /// 64-bit range constraint.
     fn decompose(
         &self,
-        region: &mut Region<'_, pallas::Base>,
+        region: &mut Region<'_, C::Base>,
         offset: usize,
-        magnitude_sign: MagnitudeSign,
-    ) -> Result<EccScalarFixedShort, Error> {
+        magnitude_sign: MagnitudeSign<C>,
+    ) -> Result<EccScalarFixedShort<C>, Error> {
         let (magnitude, sign) = magnitude_sign;
 
         // Decompose magnitude
@@ -107,13 +116,12 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
 
     pub fn assign(
         &self,
-        mut layouter: impl Layouter<pallas::Base>,
-        scalar: &EccScalarFixedShort,
-        base: &<Fixed as FixedPoints<pallas::Affine>>::ShortScalar,
-    ) -> Result<(EccPoint, EccScalarFixedShort), Error>
+        mut layouter: impl Layouter<C::Base>,
+        scalar: &EccScalarFixedShort<C>,
+        base: &<Fixed as FixedPoints<C>>::ShortScalar,
+    ) -> Result<(EccPoint<C>, EccScalarFixedShort<C>), Error>
     where
-        <Fixed as FixedPoints<pallas::Affine>>::ShortScalar:
-            super::super::FixedPoint<pallas::Affine>,
+        <Fixed as FixedPoints<C>>::ShortScalar: super::super::FixedPoint<C>,
     {
         let (scalar, acc, mul_b) = layouter.assign_region(
             || "Short fixed-base mul (incomplete addition)",
@@ -176,7 +184,7 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
 
                 // Conditionally negate `y`-coordinate
                 let y_val = sign.value().and_then(|sign| {
-                    if sign == &-pallas::Base::one() {
+                    if sign == &-C::Base::ONE {
                         -magnitude_mul.y.value()
                     } else {
                         magnitude_mul.y.value().cloned()
@@ -214,20 +222,19 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
                 .zip(scalar.sign.value())
                 .zip(result.point())
                 .assert_if_known(|((magnitude, sign), result)| {
-                    let magnitude_is_valid =
-                        magnitude <= &&pallas::Base::from(0xFFFF_FFFF_FFFF_FFFFu64);
-                    let sign_is_valid = sign.square() == pallas::Base::one();
+                    let magnitude_is_valid = magnitude <= &&C::Base::from(0xFFFF_FFFF_FFFF_FFFFu64);
+                    let sign_is_valid = sign.square() == C::Base::ONE;
                     // Only check the result if the magnitude and sign are valid.
                     !(magnitude_is_valid && sign_is_valid) || {
                         let scalar = {
                             // Move magnitude from base field into scalar field (which always fits
                             // for Pallas).
-                            let magnitude = pallas::Scalar::from_repr(magnitude.to_repr()).unwrap();
+                            let magnitude = C::Scalar::from_repr(magnitude.to_repr()).unwrap(); // todo
 
-                            let sign = if sign == &&pallas::Base::one() {
-                                pallas::Scalar::one()
+                            let sign = if sign == &&C::Base::ONE {
+                                C::Scalar::ONE
                             } else {
-                                -pallas::Scalar::one()
+                                -C::Scalar::ONE
                             };
 
                             magnitude * sign
@@ -264,7 +271,7 @@ pub mod tests {
 
     #[allow(clippy::op_ref)]
     pub(crate) fn test_mul_fixed_short(
-        chip: EccChip<TestFixedBases>,
+        chip: EccChip<pallas::Affine, TestFixedBases>,
         mut layouter: impl Layouter<pallas::Base>,
     ) -> Result<(), Error> {
         // test_short
@@ -272,11 +279,11 @@ pub mod tests {
         let test_short = FixedPointShort::from_inner(chip.clone(), Short);
 
         fn load_magnitude_sign(
-            chip: EccChip<TestFixedBases>,
+            chip: EccChip<pallas::Affine, TestFixedBases>,
             mut layouter: impl Layouter<pallas::Base>,
             magnitude: pallas::Base,
             sign: pallas::Base,
-        ) -> Result<MagnitudeSign, Error> {
+        ) -> Result<MagnitudeSign<pallas::Affine>, Error> {
             let column = chip.config().advices[0];
             let magnitude = chip.load_private(
                 layouter.namespace(|| "magnitude"),
@@ -290,11 +297,11 @@ pub mod tests {
         }
 
         fn constrain_equal_non_id(
-            chip: EccChip<TestFixedBases>,
+            chip: EccChip<pallas::Affine, TestFixedBases>,
             mut layouter: impl Layouter<pallas::Base>,
             base_val: pallas::Affine,
             scalar_val: pallas::Scalar,
-            result: Point<pallas::Affine, EccChip<TestFixedBases>>,
+            result: Point<pallas::Affine, EccChip<pallas::Affine, TestFixedBases>>,
         ) -> Result<(), Error> {
             let expected = NonIdentityPoint::new(
                 chip,
@@ -425,7 +432,7 @@ pub mod tests {
         }
 
         impl Circuit<pallas::Base> for MyCircuit {
-            type Config = EccConfig<TestFixedBases>;
+            type Config = EccConfig<pallas::Affine, TestFixedBases>;
             type FloorPlanner = SimpleFloorPlanner;
 
             fn without_witnesses(&self) -> Self {
@@ -462,7 +469,12 @@ pub mod tests {
                 meta.enable_constant(constants);
 
                 let range_check = LookupRangeCheckConfig::configure(meta, advices[9], lookup_table);
-                EccChip::<TestFixedBases>::configure(meta, advices, lagrange_coeffs, range_check)
+                EccChip::<pallas::Affine, TestFixedBases>::configure(
+                    meta,
+                    advices,
+                    lagrange_coeffs,
+                    range_check,
+                )
             }
 
             fn synthesize(

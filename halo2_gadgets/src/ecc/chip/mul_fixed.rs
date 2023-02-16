@@ -11,6 +11,7 @@ use group::{
     Curve,
 };
 use halo2_proofs::{
+    arithmetic::CurveExt,
     circuit::{AssignedCell, Region, Value},
     plonk::{
         Advice, Column, ConstraintSystem, Constraints, Error, Expression, Fixed, Selector,
@@ -18,23 +19,29 @@ use halo2_proofs::{
     },
     poly::Rotation,
 };
-use lazy_static::lazy_static;
-use pasta_curves::{arithmetic::CurveAffine, pallas};
+use pasta_curves::arithmetic::CurveAffine;
 
 pub mod base_field_elem;
 pub mod full_width;
 pub mod short;
 
-lazy_static! {
-    static ref TWO_SCALAR: pallas::Scalar = pallas::Scalar::from(2);
-    // H = 2^3 (3-bit window)
-    static ref H_SCALAR: pallas::Scalar = pallas::Scalar::from(H as u64);
-    static ref H_BASE: pallas::Base = pallas::Base::from(H as u64);
+fn two_scalar<C: CurveAffine>() -> C::Scalar {
+    C::Scalar::from(2)
+}
+
+fn h_scalar<C: CurveAffine>() -> C::Scalar {
+    C::Scalar::from(H as u64)
+}
+fn h_base<C: CurveAffine>() -> C::Base {
+    C::Base::from(H as u64)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Config<FixedPoints: super::FixedPoints<pallas::Affine>> {
-    running_sum_config: RunningSumConfig<pallas::Base, FIXED_BASE_WINDOW_SIZE>,
+pub struct Config<C: CurveAffine, FixedPoints: super::FixedPoints<C>>
+where
+    C::Base: PrimeFieldBits,
+{
+    running_sum_config: RunningSumConfig<C::Base, FIXED_BASE_WINDOW_SIZE>,
     // The fixed Lagrange interpolation coefficients for `x_p`.
     lagrange_coeffs: [Column<Fixed>; H],
     // The fixed `z` for each window such that `y + z = u^2`.
@@ -45,21 +52,25 @@ pub struct Config<FixedPoints: super::FixedPoints<pallas::Affine>> {
     // y-coordinate of accumulator (only used in the final row).
     u: Column<Advice>,
     // Configuration for `add`
-    add_config: add::Config,
+    add_config: add::Config<C>,
     // Configuration for `add_incomplete`
-    add_incomplete_config: add_incomplete::Config,
+    add_incomplete_config: add_incomplete::Config<C>,
     _marker: PhantomData<FixedPoints>,
 }
 
-impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
+impl<C: CurveAffine, FixedPoints: super::FixedPoints<C>> Config<C, FixedPoints>
+where
+    C::Base: PrimeFieldBits,
+    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
+{
     #[allow(clippy::too_many_arguments)]
     pub(super) fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
+        meta: &mut ConstraintSystem<C::Base>,
         lagrange_coeffs: [Column<Fixed>; H],
         window: Column<Advice>,
         u: Column<Advice>,
-        add_config: add::Config,
-        add_incomplete_config: add_incomplete::Config,
+        add_config: add::Config<C>,
+        add_incomplete_config: add_incomplete::Config<C>,
     ) -> Self {
         meta.enable_equality(window);
         meta.enable_equality(u);
@@ -112,7 +123,7 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
     /// This gate is not used in the mul_fixed::full_width helper, since the full-width
     /// scalar is witnessed directly as three-bit windows instead of being decomposed
     /// via a running sum.
-    fn running_sum_coords_gate(&self, meta: &mut ConstraintSystem<pallas::Base>) {
+    fn running_sum_coords_gate(&self, meta: &mut ConstraintSystem<C::Base>) {
         meta.create_gate("Running sum coordinates check", |meta| {
             let q_mul_fixed_running_sum =
                 meta.query_selector(self.running_sum_config.q_range_check());
@@ -122,7 +133,7 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
 
             //    z_{i+1} = (z_i - a_i) / 2^3
             // => a_i = z_i - z_{i+1} * 2^3
-            let word = z_cur - z_next * pallas::Base::from(H as u64);
+            let word = z_cur - z_next * C::Base::from(H as u64);
 
             Constraints::with_selector(q_mul_fixed_running_sum, self.coords_check(meta, word))
         });
@@ -132,24 +143,24 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
     #[allow(clippy::op_ref)]
     fn coords_check(
         &self,
-        meta: &mut VirtualCells<'_, pallas::Base>,
-        window: Expression<pallas::Base>,
-    ) -> Vec<(&'static str, Expression<pallas::Base>)> {
+        meta: &mut VirtualCells<'_, C::Base>,
+        window: Expression<C::Base>,
+    ) -> Vec<(&'static str, Expression<C::Base>)> {
         let y_p = meta.query_advice(self.add_config.y_p, Rotation::cur());
         let x_p = meta.query_advice(self.add_config.x_p, Rotation::cur());
         let z = meta.query_fixed(self.fixed_z);
         let u = meta.query_advice(self.u, Rotation::cur());
 
-        let window_pow: Vec<Expression<pallas::Base>> = (0..H)
+        let window_pow: Vec<Expression<C::Base>> = (0..H)
             .map(|pow| {
-                (0..pow).fold(Expression::Constant(pallas::Base::one()), |acc, _| {
+                (0..pow).fold(Expression::Constant(C::Base::ONE), |acc, _| {
                     acc * window.clone()
                 })
             })
             .collect();
 
         let interpolated_x = window_pow.iter().zip(self.lagrange_coeffs.iter()).fold(
-            Expression::Constant(pallas::Base::zero()),
+            Expression::Constant(C::Base::ZERO),
             |acc, (window_pow, coeff)| acc + (window_pow.clone() * meta.query_fixed(*coeff)),
         );
 
@@ -158,8 +169,7 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
         // Check that `y + z = u^2`, where `z` is fixed and `u`, `y` are witnessed
         let y_check = u.square() - y_p.clone() - z;
         // Check that (x, y) is on the curve
-        let on_curve =
-            y_p.square() - x_p.clone().square() * x_p - Expression::Constant(pallas::Affine::b());
+        let on_curve = y_p.square() - x_p.clone().square() * x_p - Expression::Constant(C::b());
 
         vec![
             ("check x", x_check),
@@ -169,14 +179,14 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
     }
 
     #[allow(clippy::type_complexity)]
-    fn assign_region_inner<F: FixedPoint<pallas::Affine>, const NUM_WINDOWS: usize>(
+    fn assign_region_inner<F: FixedPoint<C>, const NUM_WINDOWS: usize>(
         &self,
-        region: &mut Region<'_, pallas::Base>,
+        region: &mut Region<'_, C::Base>,
         offset: usize,
-        scalar: &ScalarFixed,
+        scalar: &ScalarFixed<C>,
         base: &F,
         coords_check_toggle: Selector,
-    ) -> Result<(NonIdentityEccPoint, NonIdentityEccPoint), Error> {
+    ) -> Result<(NonIdentityEccPoint<C>, NonIdentityEccPoint<C>), Error> {
         // Assign fixed columns for given fixed base
         self.assign_fixed_constants::<F, NUM_WINDOWS>(region, offset, base, coords_check_toggle)?;
 
@@ -193,9 +203,9 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
     }
 
     /// [Specification](https://p.z.cash/halo2-0.1:ecc-fixed-mul-load-base).
-    fn assign_fixed_constants<F: FixedPoint<pallas::Affine>, const NUM_WINDOWS: usize>(
+    fn assign_fixed_constants<F: FixedPoint<C>, const NUM_WINDOWS: usize>(
         &self,
-        region: &mut Region<'_, pallas::Base>,
+        region: &mut Region<'_, C::Base>,
         offset: usize,
         base: &F,
         coords_check_toggle: Selector,
@@ -243,7 +253,7 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
                 window + offset,
                 || {
                     let z = &constants.as_ref().unwrap().1;
-                    Value::known(pallas::Base::from(z[window]))
+                    Value::known(C::Base::from(z[window]))
                 },
             )?;
         }
@@ -252,15 +262,15 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
     }
 
     /// Assigns the values used to process a window.
-    fn process_window<F: FixedPoint<pallas::Affine>, const NUM_WINDOWS: usize>(
+    fn process_window<F: FixedPoint<C>, const NUM_WINDOWS: usize>(
         &self,
-        region: &mut Region<'_, pallas::Base>,
+        region: &mut Region<'_, C::Base>,
         offset: usize,
         w: usize,
         k_usize: Value<usize>,
-        window_scalar: Value<pallas::Scalar>,
+        window_scalar: Value<C::Scalar>,
         base: &F,
-    ) -> Result<NonIdentityEccPoint, Error> {
+    ) -> Result<NonIdentityEccPoint<C>, Error> {
         let base_value = base.generator();
         let base_u = base.u();
         assert_eq!(base_u.len(), NUM_WINDOWS);
@@ -272,7 +282,7 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
 
             let x = mul_b.map(|mul_b| {
                 let x = *mul_b.x();
-                assert!(x != pallas::Base::zero());
+                assert!(x != C::Base::ZERO);
                 x.into()
             });
             let x = region.assign_advice(
@@ -284,7 +294,7 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
 
             let y = mul_b.map(|mul_b| {
                 let y = *mul_b.y();
-                assert!(y != pallas::Base::zero());
+                assert!(y != C::Base::ZERO);
                 y.into()
             });
             let y = region.assign_advice(
@@ -298,19 +308,19 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
         };
 
         // Assign u = (y_p + z_w).sqrt()
-        let u_val = k_usize.map(|k| pallas::Base::from_repr(base_u[w][k]).unwrap());
+        let u_val = k_usize.map(|k| C::Base::from_repr(base_u[w][k]).unwrap());
         region.assign_advice(|| "u", self.u, offset + w, || u_val)?;
 
         Ok(mul_b)
     }
 
-    fn initialize_accumulator<F: FixedPoint<pallas::Affine>, const NUM_WINDOWS: usize>(
+    fn initialize_accumulator<F: FixedPoint<C>, const NUM_WINDOWS: usize>(
         &self,
-        region: &mut Region<'_, pallas::Base>,
+        region: &mut Region<'_, C::Base>,
         offset: usize,
         base: &F,
-        scalar: &ScalarFixed,
-    ) -> Result<NonIdentityEccPoint, Error> {
+        scalar: &ScalarFixed<C>,
+    ) -> Result<NonIdentityEccPoint<C>, Error> {
         // Recall that the message at each window `w` is represented as
         // `m_w = [(k_w + 2) ⋅ 8^w]B`.
         // When `w = 0`, we have `m_0 = [(k_0 + 2)]B`.
@@ -320,14 +330,14 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
         self.process_lower_bits::<_, NUM_WINDOWS>(region, offset, w, k0, k0_usize, base)
     }
 
-    fn add_incomplete<F: FixedPoint<pallas::Affine>, const NUM_WINDOWS: usize>(
+    fn add_incomplete<F: FixedPoint<C>, const NUM_WINDOWS: usize>(
         &self,
-        region: &mut Region<'_, pallas::Base>,
+        region: &mut Region<'_, C::Base>,
         offset: usize,
-        mut acc: NonIdentityEccPoint,
+        mut acc: NonIdentityEccPoint<C>,
         base: &F,
-        scalar: &ScalarFixed,
-    ) -> Result<NonIdentityEccPoint, Error> {
+        scalar: &ScalarFixed<C>,
+    ) -> Result<NonIdentityEccPoint<C>, Error> {
         let scalar_windows_field = scalar.windows_field();
         let scalar_windows_usize = scalar.windows_usize();
         assert_eq!(scalar_windows_field.len(), NUM_WINDOWS);
@@ -360,39 +370,40 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
     }
 
     /// Assigns the values used to process a window that does not contain the MSB.
-    fn process_lower_bits<F: FixedPoint<pallas::Affine>, const NUM_WINDOWS: usize>(
+    fn process_lower_bits<F: FixedPoint<C>, const NUM_WINDOWS: usize>(
         &self,
-        region: &mut Region<'_, pallas::Base>,
+        region: &mut Region<'_, C::Base>,
         offset: usize,
         w: usize,
-        k: Value<pallas::Scalar>,
+        k: Value<C::Scalar>,
         k_usize: Value<usize>,
         base: &F,
-    ) -> Result<NonIdentityEccPoint, Error> {
+    ) -> Result<NonIdentityEccPoint<C>, Error> {
         // `scalar = [(k_w + 2) ⋅ 8^w]
-        let scalar = k.map(|k| (k + *TWO_SCALAR) * (*H_SCALAR).pow(&[w as u64, 0, 0, 0]));
+        let scalar =
+            k.map(|k| (k + two_scalar::<C>()) * (h_scalar::<C>()).pow(&[w as u64, 0, 0, 0]));
 
         self.process_window::<_, NUM_WINDOWS>(region, offset, w, k_usize, scalar, base)
     }
 
     /// Assigns the values used to process the window containing the MSB.
-    fn process_msb<F: FixedPoint<pallas::Affine>, const NUM_WINDOWS: usize>(
+    fn process_msb<F: FixedPoint<C>, const NUM_WINDOWS: usize>(
         &self,
-        region: &mut Region<'_, pallas::Base>,
+        region: &mut Region<'_, C::Base>,
         offset: usize,
         base: &F,
-        scalar: &ScalarFixed,
-    ) -> Result<NonIdentityEccPoint, Error> {
+        scalar: &ScalarFixed<C>,
+    ) -> Result<NonIdentityEccPoint<C>, Error> {
         let k_usize = scalar.windows_usize()[NUM_WINDOWS - 1];
 
         // offset_acc = \sum_{j = 0}^{NUM_WINDOWS - 2} 2^{FIXED_BASE_WINDOW_SIZE*j + 1}
-        let offset_acc = (0..(NUM_WINDOWS - 1)).fold(pallas::Scalar::zero(), |acc, w| {
-            acc + (*TWO_SCALAR).pow(&[FIXED_BASE_WINDOW_SIZE as u64 * w as u64 + 1, 0, 0, 0])
+        let offset_acc = (0..(NUM_WINDOWS - 1)).fold(C::Scalar::ZERO, |acc, w| {
+            acc + (two_scalar::<C>()).pow(&[FIXED_BASE_WINDOW_SIZE as u64 * w as u64 + 1, 0, 0, 0])
         });
 
         // `scalar = [k * 8^(NUM_WINDOWS - 1) - offset_acc]`.
         let scalar = scalar.windows_field()[scalar.windows_field().len() - 1]
-            .map(|k| k * (*H_SCALAR).pow(&[(NUM_WINDOWS - 1) as u64, 0, 0, 0]) - offset_acc);
+            .map(|k| k * (h_scalar::<C>()).pow(&[(NUM_WINDOWS - 1) as u64, 0, 0, 0]) - offset_acc);
 
         self.process_window::<_, NUM_WINDOWS>(
             region,
@@ -405,47 +416,51 @@ impl<FixedPoints: super::FixedPoints<pallas::Affine>> Config<FixedPoints> {
     }
 }
 
-enum ScalarFixed {
-    FullWidth(EccScalarFixed),
-    Short(EccScalarFixedShort),
-    BaseFieldElem(EccBaseFieldElemFixed),
+enum ScalarFixed<C: CurveAffine> {
+    FullWidth(EccScalarFixed<C>),
+    Short(EccScalarFixedShort<C>),
+    BaseFieldElem(EccBaseFieldElemFixed<C>),
 }
 
-impl From<&EccScalarFixed> for ScalarFixed {
-    fn from(scalar_fixed: &EccScalarFixed) -> Self {
+impl<C: CurveAffine> From<&EccScalarFixed<C>> for ScalarFixed<C> {
+    fn from(scalar_fixed: &EccScalarFixed<C>) -> Self {
         Self::FullWidth(scalar_fixed.clone())
     }
 }
 
-impl From<&EccScalarFixedShort> for ScalarFixed {
-    fn from(scalar_fixed: &EccScalarFixedShort) -> Self {
+impl<C: CurveAffine> From<&EccScalarFixedShort<C>> for ScalarFixed<C> {
+    fn from(scalar_fixed: &EccScalarFixedShort<C>) -> Self {
         Self::Short(scalar_fixed.clone())
     }
 }
 
-impl From<&EccBaseFieldElemFixed> for ScalarFixed {
-    fn from(base_field_elem: &EccBaseFieldElemFixed) -> Self {
+impl<C: CurveAffine> From<&EccBaseFieldElemFixed<C>> for ScalarFixed<C> {
+    fn from(base_field_elem: &EccBaseFieldElemFixed<C>) -> Self {
         Self::BaseFieldElem(base_field_elem.clone())
     }
 }
 
-impl ScalarFixed {
+impl<C: CurveAffine> ScalarFixed<C>
+where
+    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
+{
     /// The scalar decomposition was done in the base field. For computation
     /// outside the circuit, we now convert them back into the scalar field.
     ///
     /// This function does not require that the base field fits inside the scalar field,
     /// because the window size fits into either field.
-    fn windows_field(&self) -> Vec<Value<pallas::Scalar>> {
-        let running_sum_to_windows = |zs: Vec<AssignedCell<pallas::Base, pallas::Base>>| {
+    fn windows_field(&self) -> Vec<Value<C::Scalar>> {
+        let running_sum_to_windows = |zs: Vec<AssignedCell<C::Base, C::Base>>| {
             (0..(zs.len() - 1))
                 .map(|idx| {
                     let z_cur = zs[idx].value();
                     let z_next = zs[idx + 1].value();
-                    let word = z_cur - z_next * Value::known(*H_BASE);
+                    let word = z_cur.cloned() - z_next.cloned() * Value::known(h_base::<C>()); // todo inf recursion in type checker
+
                     // This assumes that the endianness of the encodings of pallas::Base
                     // and pallas::Scalar are the same. They happen to be, but we need to
                     // be careful if this is generalised.
-                    word.map(|word| pallas::Scalar::from_repr(word.to_repr()).unwrap())
+                    word.map(|word| C::Scalar::from_repr(word.to_repr()).unwrap())
                 })
                 .collect::<Vec<_>>()
         };
@@ -468,7 +483,7 @@ impl ScalarFixed {
                     // and pallas::Scalar are the same. They happen to be, but we need to
                     // be careful if this is generalised.
                     bits.value()
-                        .map(|value| pallas::Scalar::from_repr(value.to_repr()).unwrap())
+                        .map(|value| <C>::Scalar::from_repr(value.to_repr()).unwrap())
                 })
                 .collect::<Vec<_>>(),
         }

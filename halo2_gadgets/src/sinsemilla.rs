@@ -521,7 +521,7 @@ pub(crate) mod tests {
     impl Circuit<pallas::Base> for MyCircuit {
         #[allow(clippy::type_complexity)]
         type Config = (
-            EccConfig<TestFixedBases>,
+            EccConfig<pallas::Affine, TestFixedBases>,
             SinsemillaConfig<TestHashDomain, TestCommitDomain, TestFixedBases>,
             SinsemillaConfig<TestHashDomain, TestCommitDomain, TestFixedBases>,
         );
@@ -571,8 +571,12 @@ pub(crate) mod tests {
 
             let range_check = LookupRangeCheckConfig::configure(meta, advices[9], table_idx);
 
-            let ecc_config =
-                EccChip::<TestFixedBases>::configure(meta, advices, lagrange_coeffs, range_check);
+            let ecc_config = EccChip::<pallas::Affine, TestFixedBases>::configure(
+                meta,
+                advices,
+                lagrange_coeffs,
+                range_check,
+            );
 
             let config1 = SinsemillaChip::configure(
                 meta,

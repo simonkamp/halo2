@@ -729,7 +729,7 @@ pub(crate) mod tests {
 
     #[allow(non_snake_case)]
     impl Circuit<pallas::Base> for MyCircuit {
-        type Config = EccConfig<TestFixedBases>;
+        type Config = EccConfig<pallas::Affine, TestFixedBases>;
         type FloorPlanner = SimpleFloorPlanner;
 
         fn without_witnesses(&self) -> Self {
@@ -765,7 +765,12 @@ pub(crate) mod tests {
             meta.enable_constant(constants);
 
             let range_check = LookupRangeCheckConfig::configure(meta, advices[9], lookup_table);
-            EccChip::<TestFixedBases>::configure(meta, advices, lagrange_coeffs, range_check)
+            EccChip::<pallas::Affine, TestFixedBases>::configure(
+                meta,
+                advices,
+                lagrange_coeffs,
+                range_check,
+            )
         }
 
         fn synthesize(

@@ -48,7 +48,7 @@ where
     /// Fixed column used to load the y-coordinate of the domain $Q$.
     fixed_y_q: Column<Fixed>,
     /// Logic specific to merged double-and-add.
-    double_and_add: DoubleAndAdd,
+    double_and_add: DoubleAndAdd<pallas::Affine>,
     /// Advice column used to load the message.
     bits: Column<Advice>,
     /// Advice column used to witness message pieces. This may or may not be the same
@@ -171,6 +171,7 @@ where
                 x_p: advices[1],
                 lambda_1: advices[3],
                 lambda_2: advices[4],
+                _phantom: PhantomData::default(),
             },
             bits: advices[2],
             witness_pieces,
@@ -279,7 +280,7 @@ where
     type RunningSum = Vec<Self::CellValue>;
 
     type X = AssignedCell<pallas::Base, pallas::Base>;
-    type NonIdentityPoint = NonIdentityEccPoint;
+    type NonIdentityPoint = NonIdentityEccPoint<pallas::Affine>;
     type FixedPoints = F;
 
     type HashDomains = Hash;

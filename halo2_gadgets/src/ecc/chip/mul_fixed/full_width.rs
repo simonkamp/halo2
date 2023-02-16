@@ -2,8 +2,9 @@ use super::super::{EccPoint, EccScalarFixed, FixedPoints, FIXED_BASE_WINDOW_SIZE
 
 use crate::utilities::{decompose_word, range_check};
 use arrayvec::ArrayVec;
-use ff::PrimeField;
+use ff::{PrimeField, PrimeFieldBits};
 use halo2_proofs::{
+    arithmetic::CurveAffine,
     circuit::{AssignedCell, Layouter, Region, Value},
     plonk::{ConstraintSystem, Constraints, Error, Selector},
     poly::Rotation,
@@ -11,15 +12,22 @@ use halo2_proofs::{
 use pasta_curves::pallas;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Config<Fixed: FixedPoints<pallas::Affine>> {
+pub struct Config<C: CurveAffine, Fixed: FixedPoints<C>>
+where
+    C::Base: PrimeFieldBits,
+{
     q_mul_fixed_full: Selector,
-    super_config: super::Config<Fixed>,
+    super_config: super::Config<C, Fixed>,
 }
 
-impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
+impl<C: CurveAffine, Fixed: FixedPoints<C>> Config<C, Fixed>
+where
+    C::Base: PrimeFieldBits,
+    C::Scalar: PrimeFieldBits + PrimeField<Repr = <C::Base as PrimeField>::Repr>,
+{
     pub(crate) fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
-        super_config: super::Config<Fixed>,
+        meta: &mut ConstraintSystem<C::Base>,
+        super_config: super::Config<C, Fixed>,
     ) -> Self {
         let config = Self {
             q_mul_fixed_full: meta.selector(),
@@ -31,7 +39,7 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
         config
     }
 
-    fn create_gate(&self, meta: &mut ConstraintSystem<pallas::Base>) {
+    fn create_gate(&self, meta: &mut ConstraintSystem<C::Base>) {
         // Check that each window `k` is within 3 bits
         // https://p.z.cash/halo2-0.1:ecc-fixed-mul-full-word
         meta.create_gate("Full-width fixed-base scalar mul", |meta| {
@@ -55,11 +63,12 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
     /// The scalar is allowed to be non-canonical.
     fn witness(
         &self,
-        region: &mut Region<'_, pallas::Base>,
+        region: &mut Region<'_, C::Base>,
         offset: usize,
-        scalar: Value<pallas::Scalar>,
-    ) -> Result<EccScalarFixed, Error> {
+        scalar: Value<C::Scalar>,
+    ) -> Result<EccScalarFixed<C>, Error> {
         let windows = self.decompose_scalar_fixed::<{ pallas::Scalar::NUM_BITS as usize }>(
+            // todo `generic parameters may not be used in const operations`
             scalar, offset, region,
         )?;
 
@@ -74,10 +83,10 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
     /// The scalar is allowed to be non-canonical.
     fn decompose_scalar_fixed<const SCALAR_NUM_BITS: usize>(
         &self,
-        scalar: Value<pallas::Scalar>,
+        scalar: Value<C::Scalar>,
         offset: usize,
-        region: &mut Region<'_, pallas::Base>,
-    ) -> Result<ArrayVec<AssignedCell<pallas::Base, pallas::Base>, NUM_WINDOWS>, Error> {
+        region: &mut Region<'_, C::Base>,
+    ) -> Result<ArrayVec<AssignedCell<C::Base, C::Base>, NUM_WINDOWS>, Error> {
         // Enable `q_mul_fixed_full` selector
         for idx in 0..NUM_WINDOWS {
             self.q_mul_fixed_full.enable(region, offset + idx)?;
@@ -85,21 +94,20 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
 
         // Decompose scalar into `k-bit` windows
         let scalar_windows: Value<Vec<u8>> = scalar.map(|scalar| {
-            decompose_word::<pallas::Scalar>(&scalar, SCALAR_NUM_BITS, FIXED_BASE_WINDOW_SIZE)
+            decompose_word::<C::Scalar>(&scalar, SCALAR_NUM_BITS, FIXED_BASE_WINDOW_SIZE)
         });
 
-        // Transpose `Value<Vec<u8>>` into `Vec<Value<pallas::Base>>`.
+        // Transpose `Value<Vec<u8>>` into `Vec<Value<C::Base>>`.
         let scalar_windows = scalar_windows
             .map(|windows| {
                 windows
                     .into_iter()
-                    .map(|window| pallas::Base::from(window as u64))
+                    .map(|window| C::Base::from(window as u64))
             })
             .transpose_vec(NUM_WINDOWS);
 
         // Store the scalar decomposition
-        let mut windows: ArrayVec<AssignedCell<pallas::Base, pallas::Base>, NUM_WINDOWS> =
-            ArrayVec::new();
+        let mut windows: ArrayVec<AssignedCell<C::Base, C::Base>, NUM_WINDOWS> = ArrayVec::new();
         for (idx, window) in scalar_windows.into_iter().enumerate() {
             let window_cell = region.assign_advice(
                 || format!("k[{:?}]", offset + idx),
@@ -115,13 +123,12 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
 
     pub fn assign(
         &self,
-        mut layouter: impl Layouter<pallas::Base>,
-        scalar: &EccScalarFixed,
-        base: &<Fixed as FixedPoints<pallas::Affine>>::FullScalar,
-    ) -> Result<(EccPoint, EccScalarFixed), Error>
+        mut layouter: impl Layouter<C::Base>,
+        scalar: &EccScalarFixed<C>,
+        base: &<Fixed as FixedPoints<C>>::FullScalar,
+    ) -> Result<(EccPoint<C>, EccScalarFixed<C>), Error>
     where
-        <Fixed as FixedPoints<pallas::Affine>>::FullScalar:
-            super::super::FixedPoint<pallas::Affine>,
+        <Fixed as FixedPoints<C>>::FullScalar: super::super::FixedPoint<C>,
     {
         let (scalar, acc, mul_b) = layouter.assign_region(
             || "Full-width fixed-base mul (incomplete addition)",
@@ -194,7 +201,7 @@ pub mod tests {
     };
 
     pub(crate) fn test_mul_fixed(
-        chip: EccChip<TestFixedBases>,
+        chip: EccChip<pallas::Affine, TestFixedBases>,
         mut layouter: impl Layouter<pallas::Base>,
     ) -> Result<(), Error> {
         let test_base = FullWidth::from_pallas_generator();
@@ -210,17 +217,17 @@ pub mod tests {
 
     #[allow(clippy::op_ref)]
     fn test_single_base(
-        chip: EccChip<TestFixedBases>,
+        chip: EccChip<pallas::Affine, TestFixedBases>,
         mut layouter: impl Layouter<pallas::Base>,
-        base: FixedPoint<pallas::Affine, EccChip<TestFixedBases>>,
+        base: FixedPoint<pallas::Affine, EccChip<pallas::Affine, TestFixedBases>>,
         base_val: pallas::Affine,
     ) -> Result<(), Error> {
         fn constrain_equal_non_id(
-            chip: EccChip<TestFixedBases>,
+            chip: EccChip<pallas::Affine, TestFixedBases>,
             mut layouter: impl Layouter<pallas::Base>,
             base_val: pallas::Affine,
             scalar_val: pallas::Scalar,
-            result: Point<pallas::Affine, EccChip<TestFixedBases>>,
+            result: Point<pallas::Affine, EccChip<pallas::Affine, TestFixedBases>>,
         ) -> Result<(), Error> {
             let expected = NonIdentityPoint::new(
                 chip,

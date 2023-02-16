@@ -1,8 +1,12 @@
+use std::marker::PhantomData;
+
 use super::super::NonIdentityEccPoint;
 use super::{X, Y, Z};
 use crate::utilities::bool_check;
 
+use ff::Field;
 use group::ff::PrimeField;
+use halo2_proofs::arithmetic::CurveAffine;
 use halo2_proofs::{
     circuit::{Region, Value},
     plonk::{
@@ -10,11 +14,10 @@ use halo2_proofs::{
     },
     poly::Rotation,
 };
-use pasta_curves::pallas;
 
 /// A helper struct for implementing single-row double-and-add using incomplete addition.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DoubleAndAdd {
+pub(crate) struct DoubleAndAdd<C: CurveAffine> {
     // x-coordinate of the accumulator in each double-and-add iteration.
     pub(crate) x_a: Column<Advice>,
     // x-coordinate of the point being added in each double-and-add iteration.
@@ -23,15 +26,16 @@ pub(crate) struct DoubleAndAdd {
     pub(crate) lambda_1: Column<Advice>,
     // lambda2 in each double-and-add iteration.
     pub(crate) lambda_2: Column<Advice>,
+    pub(crate) _phantom: PhantomData<C>,
 }
 
-impl DoubleAndAdd {
+impl<C: CurveAffine> DoubleAndAdd<C> {
     /// Derives the expression `x_r = lambda_1^2 - x_a - x_p`.
     pub(crate) fn x_r(
         &self,
-        meta: &mut VirtualCells<pallas::Base>,
+        meta: &mut VirtualCells<C::Base>,
         rotation: Rotation,
-    ) -> Expression<pallas::Base> {
+    ) -> Expression<C::Base> {
         let x_a = meta.query_advice(self.x_a, rotation);
         let x_p = meta.query_advice(self.x_p, rotation);
         let lambda_1 = meta.query_advice(self.lambda_1, rotation);
@@ -45,9 +49,9 @@ impl DoubleAndAdd {
     #[allow(non_snake_case)]
     pub(crate) fn Y_A(
         &self,
-        meta: &mut VirtualCells<pallas::Base>,
+        meta: &mut VirtualCells<C::Base>,
         rotation: Rotation,
-    ) -> Expression<pallas::Base> {
+    ) -> Expression<C::Base> {
         let x_a = meta.query_advice(self.x_a, rotation);
         let lambda_1 = meta.query_advice(self.lambda_1, rotation);
         let lambda_2 = meta.query_advice(self.lambda_2, rotation);
@@ -56,7 +60,7 @@ impl DoubleAndAdd {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Config<const NUM_BITS: usize> {
+pub(crate) struct Config<C: CurveAffine, const NUM_BITS: usize> {
     // Selector constraining the first row of incomplete addition.
     pub(super) q_mul_1: Selector,
     // Selector constraining the main loop of incomplete addition.
@@ -66,14 +70,15 @@ pub(crate) struct Config<const NUM_BITS: usize> {
     // Cumulative sum used to decompose the scalar.
     pub(super) z: Column<Advice>,
     // Logic specific to merged double-and-add.
-    pub(super) double_and_add: DoubleAndAdd,
+    pub(super) double_and_add: DoubleAndAdd<C>,
     // y-coordinate of the point being added in each double-and-add iteration.
     pub(super) y_p: Column<Advice>,
+    _phantom: PhantomData<C>,
 }
 
-impl<const NUM_BITS: usize> Config<NUM_BITS> {
+impl<C: CurveAffine, const NUM_BITS: usize> Config<C, NUM_BITS> {
     pub(super) fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
+        meta: &mut ConstraintSystem<C::Base>,
         z: Column<Advice>,
         x_a: Column<Advice>,
         x_p: Column<Advice>,
@@ -94,8 +99,10 @@ impl<const NUM_BITS: usize> Config<NUM_BITS> {
                 x_p,
                 lambda_1,
                 lambda_2,
+                _phantom: PhantomData::default(),
             },
             y_p,
+            _phantom: PhantomData::default(),
         };
 
         config.create_gate(meta);
@@ -104,23 +111,22 @@ impl<const NUM_BITS: usize> Config<NUM_BITS> {
     }
 
     // Gate for incomplete addition part of variable-base scalar multiplication.
-    fn create_gate(&self, meta: &mut ConstraintSystem<pallas::Base>) {
+    fn create_gate(&self, meta: &mut ConstraintSystem<C::Base>) {
         // Closure to compute x_{R,i} = λ_{1,i}^2 - x_{A,i} - x_{P,i}
-        let x_r = |meta: &mut VirtualCells<pallas::Base>, rotation: Rotation| {
+        let x_r = |meta: &mut VirtualCells<C::Base>, rotation: Rotation| {
             self.double_and_add.x_r(meta, rotation)
         };
 
         // Closure to compute y_{A,i} = (λ_{1,i} + λ_{2,i}) * (x_{A,i} - x_{R,i}) / 2
-        let y_a = |meta: &mut VirtualCells<pallas::Base>, rotation: Rotation| {
-            self.double_and_add.Y_A(meta, rotation) * pallas::Base::TWO_INV
+        let y_a = |meta: &mut VirtualCells<C::Base>, rotation: Rotation| {
+            self.double_and_add.Y_A(meta, rotation) * C::Base::TWO_INV
         };
 
         // Constraints used for q_mul_{2, 3} == 1
         // https://p.z.cash/halo2-0.1:ecc-var-mul-incomplete-main-loop?partial
         // https://p.z.cash/halo2-0.1:ecc-var-mul-incomplete-last-row?partial
-        let for_loop = |meta: &mut VirtualCells<pallas::Base>,
-                        y_a_next: Expression<pallas::Base>| {
-            let one = Expression::Constant(pallas::Base::one());
+        let for_loop = |meta: &mut VirtualCells<C::Base>, y_a_next: Expression<C::Base>| {
+            let one = Expression::Constant(C::Base::ONE);
 
             // z_i
             let z_cur = meta.query_advice(self.z, Rotation::cur());
@@ -144,13 +150,13 @@ impl<const NUM_BITS: usize> Config<NUM_BITS> {
             // The current bit in the scalar decomposition, k_i = z_i - 2⋅z_{i+1}.
             // Recall that we assigned the cumulative variable `z_i` in descending order,
             // i from n down to 0. So z_{i+1} corresponds to the `z_prev` query.
-            let k = z_cur - z_prev * pallas::Base::from(2);
+            let k = z_cur - z_prev * C::Base::from(2);
             // Check booleanity of decomposition.
             let bool_check = bool_check(k.clone());
 
             // λ_{1,i}⋅(x_{A,i} − x_{P,i}) − y_{A,i} + (2k_i - 1) y_{P,i} = 0
             let gradient_1 = lambda1_cur * (x_a_cur.clone() - x_p_cur) - y_a_cur.clone()
-                + (k * pallas::Base::from(2) - one) * y_p_cur;
+                + (k * C::Base::from(2) - one) * y_p_cur;
 
             // λ_{2,i}^2 − x_{A,i-1} − x_{R,i} − x_{A,i} = 0
             let secant_line = lambda2_cur.clone().square()
@@ -227,12 +233,12 @@ impl<const NUM_BITS: usize> Config<NUM_BITS> {
     #[allow(clippy::type_complexity)]
     pub(super) fn double_and_add(
         &self,
-        region: &mut Region<'_, pallas::Base>,
+        region: &mut Region<'_, C::Base>,
         offset: usize,
-        base: &NonIdentityEccPoint,
+        base: &NonIdentityEccPoint<C>,
         bits: &[Value<bool>],
-        acc: (X<pallas::Base>, Y<pallas::Base>, Z<pallas::Base>),
-    ) -> Result<(X<pallas::Base>, Y<pallas::Base>, Vec<Z<pallas::Base>>), Error> {
+        acc: (X<C::Base>, Y<C::Base>, Z<C::Base>),
+    ) -> Result<(X<C::Base>, Y<C::Base>, Vec<Z<C::Base>>), Error> {
         // Check that we have the correct number of bits for this double-and-add.
         assert_eq!(bits.len(), NUM_BITS);
 
@@ -292,7 +298,7 @@ impl<const NUM_BITS: usize> Config<NUM_BITS> {
         let offset = offset + 1;
 
         // Initialise vector to store all interstitial `z` running sum values.
-        let mut zs: Vec<Z<pallas::Base>> = Vec::with_capacity(bits.len());
+        let mut zs: Vec<Z<C::Base>> = Vec::with_capacity(bits.len());
 
         // Incomplete addition
         for (row, k) in bits.iter().enumerate() {
@@ -301,7 +307,7 @@ impl<const NUM_BITS: usize> Config<NUM_BITS> {
             let z_val = z
                 .value()
                 .zip(k.as_ref())
-                .map(|(z_val, k)| pallas::Base::from(2) * z_val + pallas::Base::from(*k as u64));
+                .map(|(z_val, k)| C::Base::from(2) * z_val + C::Base::from(*k as u64));
             z = region.assign_advice(|| "z", self.z, row + offset, || z_val)?;
             zs.push(Z(z.clone()));
 
@@ -340,7 +346,7 @@ impl<const NUM_BITS: usize> Config<NUM_BITS> {
                     .zip(x_a.value())
                     .zip(x_r)
                     .map(|(((lambda1, y_a), x_a), x_r)| {
-                        y_a * pallas::Base::from(2) * (x_a - x_r).invert() - lambda1
+                        y_a * C::Base::from(2) * (x_a - x_r).invert() - lambda1
                     });
             region.assign_advice(
                 || "lambda2",
