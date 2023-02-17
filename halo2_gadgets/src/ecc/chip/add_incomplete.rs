@@ -148,24 +148,25 @@ impl<C: CurveAffine> Config<C> {
 pub mod tests {
     use group::Curve;
     use halo2_proofs::{
+        arithmetic::CurveAffine,
         circuit::{Layouter, Value},
         plonk::Error,
     };
-    use pasta_curves::pallas;
 
     use crate::ecc::{EccInstructions, NonIdentityPoint};
 
     #[allow(clippy::too_many_arguments)]
     pub fn test_add_incomplete<
-        EccChip: EccInstructions<pallas::Affine> + Clone + Eq + std::fmt::Debug,
+        C: CurveAffine,
+        EccChip: EccInstructions<C> + Clone + Eq + std::fmt::Debug,
     >(
         chip: EccChip,
-        mut layouter: impl Layouter<pallas::Base>,
-        p_val: pallas::Affine,
-        p: &NonIdentityPoint<pallas::Affine, EccChip>,
-        q_val: pallas::Affine,
-        q: &NonIdentityPoint<pallas::Affine, EccChip>,
-        p_neg: &NonIdentityPoint<pallas::Affine, EccChip>,
+        mut layouter: impl Layouter<C::Base>,
+        p_val: C,
+        p: &NonIdentityPoint<C, EccChip>,
+        q_val: C,
+        q: &NonIdentityPoint<C, EccChip>,
+        p_neg: &NonIdentityPoint<C, EccChip>,
         test_errors: bool,
     ) -> Result<(), Error> {
         // P + Q

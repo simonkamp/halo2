@@ -108,7 +108,7 @@ where
             // Check α_0_prime = α_0 + 2^130 - t_p
             let alpha_0_prime_check = {
                 let two_pow_130 = Expression::Constant(C::Base::from_u128(1 << 65).square());
-                let t_p = Expression::Constant(C::Base::from_u128(T_P));
+                let t_p = Expression::Constant(C::Base::from_u128(T_P)); // todo pallas specific constant
                 alpha_0_prime - (alpha_0 + two_pow_130 - t_p)
             };
 
@@ -277,7 +277,7 @@ where
             // alpha_0_prime = alpha + 2^130 - t_p.
             let alpha_0_prime = alpha_0.map(|alpha_0| {
                 let two_pow_130 = C::Base::from_u128(1 << 65).square();
-                let t_p = C::Base::from_u128(T_P);
+                let t_p = C::Base::from_u128(T_P); // todo pallas specific constant
                 alpha_0 + two_pow_130 - t_p
             });
             let zs = self.lookup_config.witness_check(

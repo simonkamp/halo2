@@ -153,24 +153,23 @@ impl<C: CurveAffine> Config<C> {
 
 #[cfg(test)]
 pub mod tests {
-    use group::prime::PrimeCurveAffine;
     use halo2_proofs::circuit::Layouter;
-    use pasta_curves::pallas;
 
     use super::*;
     use crate::ecc::{EccInstructions, NonIdentityPoint};
 
     pub fn test_witness_non_id<
-        EccChip: EccInstructions<pallas::Affine> + Clone + Eq + std::fmt::Debug,
+        C: CurveAffine,
+        EccChip: EccInstructions<C> + Clone + Eq + std::fmt::Debug,
     >(
         chip: EccChip,
-        mut layouter: impl Layouter<pallas::Base>,
+        mut layouter: impl Layouter<C::Base>,
     ) {
         // Witnessing the identity should return an error.
         NonIdentityPoint::new(
             chip,
             layouter.namespace(|| "witness identity"),
-            Value::known(pallas::Affine::identity()),
+            Value::known(C::identity()),
         )
         .expect_err("witnessing 𝒪 should return an error");
     }

@@ -327,29 +327,28 @@ impl<C: CurveAffine> Config<C> {
 
 #[cfg(test)]
 pub mod tests {
-    use group::{prime::PrimeCurveAffine, Curve};
+    use group::Curve;
     use halo2_proofs::{
+        arithmetic::CurveAffine,
         circuit::{Layouter, Value},
         plonk::Error,
     };
-    use pasta_curves::{arithmetic::CurveExt, pallas};
+    use pasta_curves::arithmetic::CurveExt;
 
     use crate::ecc::{chip::EccPoint, EccInstructions, NonIdentityPoint};
 
     #[allow(clippy::too_many_arguments)]
     pub fn test_add<
-        EccChip: EccInstructions<pallas::Affine, Point = EccPoint<pallas::Affine>>
-            + Clone
-            + Eq
-            + std::fmt::Debug,
+        C: CurveAffine,
+        EccChip: EccInstructions<C, Point = EccPoint<C>> + Clone + Eq + std::fmt::Debug,
     >(
         chip: EccChip,
-        mut layouter: impl Layouter<pallas::Base>,
-        p_val: pallas::Affine,
-        p: &NonIdentityPoint<pallas::Affine, EccChip>,
-        q_val: pallas::Affine,
-        q: &NonIdentityPoint<pallas::Affine, EccChip>,
-        p_neg: &NonIdentityPoint<pallas::Affine, EccChip>,
+        mut layouter: impl Layouter<C::Base>,
+        p_val: C,
+        p: &NonIdentityPoint<C, EccChip>,
+        q_val: C,
+        q: &NonIdentityPoint<C, EccChip>,
+        p_neg: &NonIdentityPoint<C, EccChip>,
     ) -> Result<(), Error> {
         // Make sure P and Q are not the same point.
         assert_ne!(p_val, q_val);
