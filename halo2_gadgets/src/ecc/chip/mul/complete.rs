@@ -1,8 +1,8 @@
 use super::super::{add, EccPoint};
 use super::{COMPLETE_RANGE, X, Y, Z};
+use crate::ecc::chip::PastaCurve;
 use crate::utilities::{bool_check, ternary};
 
-use halo2_proofs::arithmetic::CurveAffine;
 use halo2_proofs::{
     circuit::{Region, Value},
     plonk::{Advice, Column, ConstraintSystem, Constraints, Error, Expression, Selector},
@@ -10,7 +10,7 @@ use halo2_proofs::{
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Config<C: CurveAffine> {
+pub struct Config<C: PastaCurve> {
     // Selector used to constrain the cells used in complete addition.
     q_mul_decompose_var: Selector,
     // Advice column used to decompose scalar in complete addition.
@@ -19,7 +19,7 @@ pub struct Config<C: CurveAffine> {
     add_config: add::Config<C>,
 }
 
-impl<C: CurveAffine> Config<C> {
+impl<C: PastaCurve> Config<C> {
     pub(super) fn configure(
         meta: &mut ConstraintSystem<C::Base>,
         z_complete: Column<Advice>,

@@ -1,11 +1,11 @@
 use super::{T_Q, Z};
+use crate::ecc::chip::PastaCurve;
 use crate::{
     sinsemilla::primitives as sinsemilla, utilities::lookup_range_check::LookupRangeCheckConfig,
 };
 
-use ff::{Field, PrimeFieldBits};
+use ff::Field;
 use group::ff::PrimeField;
-use halo2_proofs::arithmetic::CurveAffine;
 use halo2_proofs::circuit::AssignedCell;
 use halo2_proofs::{
     circuit::Layouter,
@@ -16,10 +16,7 @@ use halo2_proofs::{
 use std::iter;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Config<C: CurveAffine>
-where
-    C::Base: PrimeFieldBits,
-{
+pub struct Config<C: PastaCurve> {
     // Selector to check z_0 = alpha + t_q (mod p)
     q_mul_overflow: Selector,
     // 10-bit lookup table
@@ -28,10 +25,7 @@ where
     advices: [Column<Advice>; 3],
 }
 
-impl<C: CurveAffine> Config<C>
-where
-    C::Base: PrimeFieldBits,
-{
+impl<C: PastaCurve> Config<C> {
     pub(super) fn configure(
         meta: &mut ConstraintSystem<C::Base>,
         lookup_config: LookupRangeCheckConfig<C::Base, { sinsemilla::K }>,

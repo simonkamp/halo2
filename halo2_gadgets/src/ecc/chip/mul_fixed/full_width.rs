@@ -1,10 +1,12 @@
 use super::super::{EccPoint, EccScalarFixed, FixedPoints, FIXED_BASE_WINDOW_SIZE, H, NUM_WINDOWS};
 
-use crate::utilities::{decompose_word, range_check};
+use crate::{
+    ecc::chip::PastaCurve,
+    utilities::{decompose_word, range_check},
+};
 use arrayvec::ArrayVec;
-use ff::{PrimeField, PrimeFieldBits};
+use ff::PrimeField;
 use halo2_proofs::{
-    arithmetic::CurveAffine,
     circuit::{AssignedCell, Layouter, Region, Value},
     plonk::{ConstraintSystem, Constraints, Error, Selector},
     poly::Rotation,
@@ -12,19 +14,12 @@ use halo2_proofs::{
 use pasta_curves::pallas;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Config<C: CurveAffine, Fixed: FixedPoints<C>>
-where
-    C::Base: PrimeFieldBits,
-{
+pub struct Config<C: PastaCurve, Fixed: FixedPoints<C>> {
     q_mul_fixed_full: Selector,
     super_config: super::Config<C, Fixed>,
 }
 
-impl<C: CurveAffine, Fixed: FixedPoints<C>> Config<C, Fixed>
-where
-    C::Base: PrimeFieldBits,
-    C::Scalar: PrimeFieldBits + PrimeField<Repr = <C::Base as PrimeField>::Repr>,
-{
+impl<C: PastaCurve, Fixed: FixedPoints<C>> Config<C, Fixed> {
     pub(crate) fn configure(
         meta: &mut ConstraintSystem<C::Base>,
         super_config: super::Config<C, Fixed>,
@@ -81,6 +76,7 @@ where
     /// Witnesses the given scalar as `NUM_WINDOWS` 3-bit windows.
     ///
     /// The scalar is allowed to be non-canonical.
+    #[allow(clippy::type_complexity)]
     fn decompose_scalar_fixed<const SCALAR_NUM_BITS: usize>(
         &self,
         scalar: Value<C::Scalar>,

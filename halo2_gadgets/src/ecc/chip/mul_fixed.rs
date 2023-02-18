@@ -1,6 +1,6 @@
 use super::{
     add, add_incomplete, EccBaseFieldElemFixed, EccScalarFixed, EccScalarFixedShort, FixedPoint,
-    NonIdentityEccPoint, FIXED_BASE_WINDOW_SIZE, H,
+    NonIdentityEccPoint, PastaCurve, FIXED_BASE_WINDOW_SIZE, H,
 };
 use crate::utilities::decompose_running_sum::RunningSumConfig;
 
@@ -18,28 +18,24 @@ use halo2_proofs::{
     },
     poly::Rotation,
 };
-use pasta_curves::arithmetic::CurveAffine;
 
 pub mod base_field_elem;
 pub mod full_width;
 pub mod short;
 
-fn two_scalar<C: CurveAffine>() -> C::Scalar {
+fn two_scalar<C: PastaCurve>() -> C::Scalar {
     C::Scalar::from(2)
 }
 
-fn h_scalar<C: CurveAffine>() -> C::Scalar {
+fn h_scalar<C: PastaCurve>() -> C::Scalar {
     C::Scalar::from(H as u64)
 }
-fn h_base<C: CurveAffine>() -> C::Base {
+fn h_base<C: PastaCurve>() -> C::Base {
     C::Base::from(H as u64)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Config<C: CurveAffine, FixedPoints: super::FixedPoints<C>>
-where
-    C::Base: PrimeFieldBits,
-{
+pub struct Config<C: PastaCurve, FixedPoints: super::FixedPoints<C>> {
     running_sum_config: RunningSumConfig<C::Base, FIXED_BASE_WINDOW_SIZE>,
     // The fixed Lagrange interpolation coefficients for `x_p`.
     lagrange_coeffs: [Column<Fixed>; H],
@@ -57,11 +53,7 @@ where
     _marker: PhantomData<FixedPoints>,
 }
 
-impl<C: CurveAffine, FixedPoints: super::FixedPoints<C>> Config<C, FixedPoints>
-where
-    C::Base: PrimeFieldBits,
-    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
-{
+impl<C: PastaCurve, FixedPoints: super::FixedPoints<C>> Config<C, FixedPoints> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn configure(
         meta: &mut ConstraintSystem<C::Base>,
@@ -415,34 +407,31 @@ where
     }
 }
 
-enum ScalarFixed<C: CurveAffine> {
+enum ScalarFixed<C: PastaCurve> {
     FullWidth(EccScalarFixed<C>),
     Short(EccScalarFixedShort<C>),
     BaseFieldElem(EccBaseFieldElemFixed<C>),
 }
 
-impl<C: CurveAffine> From<&EccScalarFixed<C>> for ScalarFixed<C> {
+impl<C: PastaCurve> From<&EccScalarFixed<C>> for ScalarFixed<C> {
     fn from(scalar_fixed: &EccScalarFixed<C>) -> Self {
         Self::FullWidth(scalar_fixed.clone())
     }
 }
 
-impl<C: CurveAffine> From<&EccScalarFixedShort<C>> for ScalarFixed<C> {
+impl<C: PastaCurve> From<&EccScalarFixedShort<C>> for ScalarFixed<C> {
     fn from(scalar_fixed: &EccScalarFixedShort<C>) -> Self {
         Self::Short(scalar_fixed.clone())
     }
 }
 
-impl<C: CurveAffine> From<&EccBaseFieldElemFixed<C>> for ScalarFixed<C> {
+impl<C: PastaCurve> From<&EccBaseFieldElemFixed<C>> for ScalarFixed<C> {
     fn from(base_field_elem: &EccBaseFieldElemFixed<C>) -> Self {
         Self::BaseFieldElem(base_field_elem.clone())
     }
 }
 
-impl<C: CurveAffine> ScalarFixed<C>
-where
-    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
-{
+impl<C: PastaCurve> ScalarFixed<C> {
     /// The scalar decomposition was done in the base field. For computation
     /// outside the circuit, we now convert them back into the scalar field.
     ///

@@ -1,4 +1,4 @@
-use super::{add, EccPoint, NonIdentityEccPoint, ScalarVar, T_Q};
+use super::{add, EccPoint, NonIdentityEccPoint, PastaCurve, ScalarVar, T_Q};
 use crate::{
     sinsemilla::primitives as sinsemilla,
     utilities::{bool_check, lookup_range_check::LookupRangeCheckConfig, ternary},
@@ -8,9 +8,8 @@ use std::{
     ops::{Deref, Range},
 };
 
-use ff::{Field, PrimeField, PrimeFieldBits};
+use ff::{Field, PrimeField};
 use halo2_proofs::{
-    arithmetic::CurveAffine,
     circuit::{AssignedCell, Layouter, Region, Value},
     plonk::{Advice, Assigned, Column, ConstraintSystem, Constraints, Error, Selector},
     poly::Rotation,
@@ -47,12 +46,7 @@ const INCOMPLETE_LO_LEN: usize = INCOMPLETE_LEN - INCOMPLETE_HI_LEN;
 const COMPLETE_RANGE: Range<usize> = INCOMPLETE_LEN..(INCOMPLETE_LEN + NUM_COMPLETE_BITS);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Config<C: CurveAffine>
-where
-    C::Base: PrimeFieldBits,
-    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
-    C::Base: PrimeField<Repr = [u8; 32]>,
-{
+pub struct Config<C: PastaCurve> {
     // Selector used to check switching logic on LSB
     q_mul_lsb: Selector,
     // Configuration used in complete addition
@@ -67,12 +61,7 @@ where
     overflow_config: overflow::Config<C>,
 }
 
-impl<C: CurveAffine> Config<C>
-where
-    C::Base: PrimeFieldBits,
-    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
-    C::Base: PrimeField<Repr = [u8; 32]>,
-{
+impl<C: PastaCurve> Config<C> {
     pub(super) fn configure(
         meta: &mut ConstraintSystem<C::Base>,
         add_config: add::Config<C>,
@@ -429,10 +418,7 @@ impl<F: Field> Deref for Z<F> {
 // https://p.z.cash/halo2-0.1:ecc-var-mul-witness-scalar?partial
 #[allow(clippy::assign_op_pattern)]
 #[allow(clippy::ptr_offset_with_cast)]
-fn decompose_for_scalar_mul<C: CurveAffine>(scalar: Value<&C::Base>) -> Vec<Value<bool>>
-where
-    C::Base: PrimeField<Repr = [u8; 32]>,
-{
+fn decompose_for_scalar_mul<C: PastaCurve>(scalar: Value<&C::Base>) -> Vec<Value<bool>> {
     construct_uint! {
         struct U256(4);
     }

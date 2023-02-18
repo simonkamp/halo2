@@ -1,32 +1,26 @@
 use std::convert::TryInto;
 
 use super::super::{EccPoint, EccScalarFixedShort, FixedPoints, L_SCALAR_SHORT, NUM_WINDOWS_SHORT};
-use crate::{ecc::chip::MagnitudeSign, utilities::bool_check};
+use crate::{
+    ecc::chip::{MagnitudeSign, PastaCurve},
+    utilities::bool_check,
+};
 
-use ff::{Field, PrimeField, PrimeFieldBits};
+use ff::Field;
 use halo2_proofs::{
-    arithmetic::CurveAffine,
     circuit::{Layouter, Region},
     plonk::{ConstraintSystem, Constraints, Error, Expression, Selector},
     poly::Rotation,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Config<C: CurveAffine, Fixed: FixedPoints<C>>
-where
-    C::Base: PrimeFieldBits,
-    C::Scalar: PrimeFieldBits,
-{
+pub struct Config<C: PastaCurve, Fixed: FixedPoints<C>> {
     // Selector used for fixed-base scalar mul with short signed exponent.
     q_mul_fixed_short: Selector,
     super_config: super::Config<C, Fixed>,
 }
 
-impl<C: CurveAffine, Fixed: FixedPoints<C>> Config<C, Fixed>
-where
-    C::Base: PrimeFieldBits + PrimeField<Repr = <C::Scalar as PrimeField>::Repr>,
-    C::Scalar: PrimeFieldBits,
-{
+impl<C: PastaCurve, Fixed: FixedPoints<C>> Config<C, Fixed> {
     pub(crate) fn configure(
         meta: &mut ConstraintSystem<C::Base>,
         super_config: super::Config<C, Fixed>,
@@ -214,6 +208,7 @@ where
         // tested at the circuit-level.
         {
             use super::super::FixedPoint;
+            use ff::PrimeField;
             use group::Curve;
 
             scalar

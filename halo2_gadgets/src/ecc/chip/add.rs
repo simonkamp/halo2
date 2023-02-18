@@ -1,8 +1,7 @@
-use super::EccPoint;
+use super::{EccPoint, PastaCurve};
 
 use group::ff::PrimeField;
 use halo2_proofs::{
-    arithmetic::CurveAffine,
     circuit::Region,
     plonk::{Advice, Assigned, Column, ConstraintSystem, Constraints, Error, Expression, Selector},
     poly::Rotation,
@@ -11,7 +10,7 @@ use halo2_proofs::{
 use std::{collections::HashSet, marker::PhantomData};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Config<C: CurveAffine> {
+pub struct Config<C: PastaCurve> {
     q_add: Selector,
     // lambda
     lambda: Column<Advice>,
@@ -34,7 +33,7 @@ pub struct Config<C: CurveAffine> {
     _phantom: PhantomData<C>,
 }
 
-impl<C: CurveAffine> Config<C> {
+impl<C: PastaCurve> Config<C> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn configure(
         meta: &mut ConstraintSystem<C::Base>,
@@ -329,17 +328,19 @@ impl<C: CurveAffine> Config<C> {
 pub mod tests {
     use group::Curve;
     use halo2_proofs::{
-        arithmetic::CurveAffine,
         circuit::{Layouter, Value},
         plonk::Error,
     };
     use pasta_curves::arithmetic::CurveExt;
 
-    use crate::ecc::{chip::EccPoint, EccInstructions, NonIdentityPoint};
+    use crate::ecc::{
+        chip::{EccPoint, PastaCurve},
+        EccInstructions, NonIdentityPoint,
+    };
 
     #[allow(clippy::too_many_arguments)]
     pub fn test_add<
-        C: CurveAffine,
+        C: PastaCurve,
         EccChip: EccInstructions<C, Point = EccPoint<C>> + Clone + Eq + std::fmt::Debug,
     >(
         chip: EccChip,

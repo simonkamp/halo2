@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use super::{EccPoint, NonIdentityEccPoint};
+use super::{EccPoint, NonIdentityEccPoint, PastaCurve};
 
 use halo2_proofs::{
     circuit::{AssignedCell, Region, Value},
@@ -18,7 +18,7 @@ type Coordinates<C> = (
 );
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Config<C: CurveAffine> {
+pub struct Config<C: PastaCurve> {
     q_point: Selector,
     q_point_non_id: Selector,
     // x-coordinate
@@ -28,7 +28,7 @@ pub struct Config<C: CurveAffine> {
     _phantom: PhantomData<C>,
 }
 
-impl<C: CurveAffine> Config<C> {
+impl<C: PastaCurve> Config<C> {
     pub(super) fn configure(
         meta: &mut ConstraintSystem<C::Base>,
         x: Column<Advice>,
@@ -87,6 +87,7 @@ impl<C: CurveAffine> Config<C> {
         });
     }
 
+    #[allow(clippy::type_complexity)]
     fn assign_xy(
         &self,
         value: Value<(Assigned<C::Base>, Assigned<C::Base>)>,
@@ -159,7 +160,7 @@ pub mod tests {
     use crate::ecc::{EccInstructions, NonIdentityPoint};
 
     pub fn test_witness_non_id<
-        C: CurveAffine,
+        C: PastaCurve,
         EccChip: EccInstructions<C> + Clone + Eq + std::fmt::Debug,
     >(
         chip: EccChip,

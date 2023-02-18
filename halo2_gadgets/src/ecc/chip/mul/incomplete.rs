@@ -2,11 +2,11 @@ use std::marker::PhantomData;
 
 use super::super::NonIdentityEccPoint;
 use super::{X, Y, Z};
+use crate::ecc::chip::PastaCurve;
 use crate::utilities::bool_check;
 
 use ff::Field;
 use group::ff::PrimeField;
-use halo2_proofs::arithmetic::CurveAffine;
 use halo2_proofs::{
     circuit::{Region, Value},
     plonk::{
@@ -17,7 +17,7 @@ use halo2_proofs::{
 
 /// A helper struct for implementing single-row double-and-add using incomplete addition.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DoubleAndAdd<C: CurveAffine> {
+pub(crate) struct DoubleAndAdd<C: PastaCurve> {
     // x-coordinate of the accumulator in each double-and-add iteration.
     pub(crate) x_a: Column<Advice>,
     // x-coordinate of the point being added in each double-and-add iteration.
@@ -29,7 +29,7 @@ pub(crate) struct DoubleAndAdd<C: CurveAffine> {
     pub(crate) _phantom: PhantomData<C>,
 }
 
-impl<C: CurveAffine> DoubleAndAdd<C> {
+impl<C: PastaCurve> DoubleAndAdd<C> {
     /// Derives the expression `x_r = lambda_1^2 - x_a - x_p`.
     pub(crate) fn x_r(
         &self,
@@ -60,7 +60,7 @@ impl<C: CurveAffine> DoubleAndAdd<C> {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Config<C: CurveAffine, const NUM_BITS: usize> {
+pub(crate) struct Config<C: PastaCurve, const NUM_BITS: usize> {
     // Selector constraining the first row of incomplete addition.
     pub(super) q_mul_1: Selector,
     // Selector constraining the main loop of incomplete addition.
@@ -76,7 +76,7 @@ pub(crate) struct Config<C: CurveAffine, const NUM_BITS: usize> {
     _phantom: PhantomData<C>,
 }
 
-impl<C: CurveAffine, const NUM_BITS: usize> Config<C, NUM_BITS> {
+impl<C: PastaCurve, const NUM_BITS: usize> Config<C, NUM_BITS> {
     pub(super) fn configure(
         meta: &mut ConstraintSystem<C::Base>,
         z: Column<Advice>,

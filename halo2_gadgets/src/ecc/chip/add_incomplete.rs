@@ -1,15 +1,14 @@
 use std::{collections::HashSet, marker::PhantomData};
 
-use super::NonIdentityEccPoint;
+use super::{NonIdentityEccPoint, PastaCurve};
 use halo2_proofs::{
-    arithmetic::CurveAffine,
     circuit::Region,
     plonk::{Advice, Column, ConstraintSystem, Constraints, Error, Selector},
     poly::Rotation,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Config<C: CurveAffine> {
+pub struct Config<C: PastaCurve> {
     q_add_incomplete: Selector,
     // x-coordinate of P in P + Q = R
     pub x_p: Column<Advice>,
@@ -22,7 +21,7 @@ pub struct Config<C: CurveAffine> {
     _phantom: PhantomData<C>,
 }
 
-impl<C: CurveAffine> Config<C> {
+impl<C: PastaCurve> Config<C> {
     pub(super) fn configure(
         meta: &mut ConstraintSystem<C::Base>,
         x_p: Column<Advice>,
@@ -148,16 +147,15 @@ impl<C: CurveAffine> Config<C> {
 pub mod tests {
     use group::Curve;
     use halo2_proofs::{
-        arithmetic::CurveAffine,
         circuit::{Layouter, Value},
         plonk::Error,
     };
 
-    use crate::ecc::{EccInstructions, NonIdentityPoint};
+    use crate::ecc::{chip::PastaCurve, EccInstructions, NonIdentityPoint};
 
     #[allow(clippy::too_many_arguments)]
     pub fn test_add_incomplete<
-        C: CurveAffine,
+        C: PastaCurve,
         EccChip: EccInstructions<C> + Clone + Eq + std::fmt::Debug,
     >(
         chip: EccChip,

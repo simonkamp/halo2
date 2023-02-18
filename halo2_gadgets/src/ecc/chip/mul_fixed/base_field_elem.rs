@@ -1,15 +1,15 @@
 use super::super::{EccBaseFieldElemFixed, EccPoint, FixedPoints, NUM_WINDOWS, T_P};
 use super::h_base;
 
+use crate::ecc::chip::PastaCurve;
 use crate::utilities::bool_check;
 use crate::{
     sinsemilla::primitives as sinsemilla,
     utilities::{bitrange_subset, lookup_range_check::LookupRangeCheckConfig, range_check},
 };
 
-use ff::{Field, PrimeFieldBits};
+use ff::Field;
 use group::ff::PrimeField;
-use halo2_proofs::arithmetic::CurveAffine;
 use halo2_proofs::{
     circuit::{AssignedCell, Layouter},
     plonk::{Advice, Column, ConstraintSystem, Constraints, Error, Expression, Selector},
@@ -19,21 +19,14 @@ use halo2_proofs::{
 use std::convert::TryInto;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Config<C: CurveAffine, Fixed: FixedPoints<C>>
-where
-    C::Base: PrimeFieldBits,
-{
+pub struct Config<C: PastaCurve, Fixed: FixedPoints<C>> {
     q_mul_fixed_base_field: Selector,
     canon_advices: [Column<Advice>; 3],
     lookup_config: LookupRangeCheckConfig<C::Base, { sinsemilla::K }>,
     super_config: super::Config<C, Fixed>,
 }
 
-impl<C: CurveAffine, Fixed: FixedPoints<C>> Config<C, Fixed>
-where
-    C::Base: PrimeFieldBits + PrimeField<Repr = <C::Scalar as PrimeField>::Repr>,
-    C::Scalar: PrimeFieldBits,
-{
+impl<C: PastaCurve, Fixed: FixedPoints<C>> Config<C, Fixed> {
     pub(crate) fn configure(
         meta: &mut ConstraintSystem<C::Base>,
         canon_advices: [Column<Advice>; 3],

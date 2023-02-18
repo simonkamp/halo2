@@ -32,7 +32,7 @@ pub(crate) use mul::incomplete::DoubleAndAdd;
 /// identity represented as (0, 0).
 /// Each coordinate is assigned to a cell.
 #[derive(Clone, Debug)]
-pub struct EccPoint<C: CurveAffine> {
+pub struct EccPoint<C: PastaCurve> {
     /// x-coordinate
     ///
     /// Stored as an `Assigned<F>` to enable batching inversions.
@@ -43,7 +43,26 @@ pub struct EccPoint<C: CurveAffine> {
     y: AssignedCell<Assigned<C::Base>, C::Base>,
 }
 
-impl<C: CurveAffine> EccPoint<C> {
+/// The PastaCurve trait introduces some additional bounds to the CurveAffine which are needed in the ecc chip implementation.
+/// TODO: This could be more cleanly expressed using the unstable associated_type_bounds feature.
+pub trait PastaCurve: CurveAffine<Base = Self::PastaBase, ScalarExt = Self::PastaScalar> {
+    /// bla bla
+    type PastaBase: PrimeFieldBits + PrimeField<Repr = [u8; 32]> + std::cmp::PartialOrd;
+    /// bla
+    type PastaScalar: PrimeFieldBits + PrimeField<Repr = [u8; 32]> + std::cmp::PartialOrd;
+}
+
+impl<C> PastaCurve for C
+where
+    C: CurveAffine,
+    C::Base: PrimeFieldBits + PrimeField<Repr = [u8; 32]>,
+    C::Scalar: PrimeFieldBits + PrimeField<Repr = [u8; 32]>,
+{
+    type PastaBase = C::Base;
+    type PastaScalar = C::Scalar;
+}
+
+impl<C: PastaCurve> EccPoint<C> {
     /// Constructs a point from its coordinates, without checking they are on the curve.
     ///
     /// This is an internal API that we only use where we know we have a valid curve point.
@@ -84,7 +103,7 @@ impl<C: CurveAffine> EccPoint<C> {
 /// A non-identity point represented in affine (x, y) coordinates.
 /// Each coordinate is assigned to a cell.
 #[derive(Clone, Debug)]
-pub struct NonIdentityEccPoint<C: CurveAffine> {
+pub struct NonIdentityEccPoint<C: PastaCurve> {
     /// x-coordinate
     ///
     /// Stored as an `Assigned<F>` to enable batching inversions.
@@ -95,7 +114,7 @@ pub struct NonIdentityEccPoint<C: CurveAffine> {
     y: AssignedCell<Assigned<C::Base>, C::Base>,
 }
 
-impl<C: CurveAffine> NonIdentityEccPoint<C> {
+impl<C: PastaCurve> NonIdentityEccPoint<C> {
     /// Constructs a point from its coordinates, without checking they are on the curve.
     ///
     /// This is an internal API that we only use where we know we have a valid non-identity
@@ -124,7 +143,7 @@ impl<C: CurveAffine> NonIdentityEccPoint<C> {
     }
 }
 
-impl<C: CurveAffine> From<NonIdentityEccPoint<C>> for EccPoint<C> {
+impl<C: PastaCurve> From<NonIdentityEccPoint<C>> for EccPoint<C> {
     fn from(non_id_point: NonIdentityEccPoint<C>) -> Self {
         Self {
             x: non_id_point.x,
@@ -136,12 +155,7 @@ impl<C: CurveAffine> From<NonIdentityEccPoint<C>> for EccPoint<C> {
 /// Configuration for [`EccChip`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(non_snake_case)]
-pub struct EccConfig<C: CurveAffine, FixedPoints: super::FixedPoints<C>>
-where
-    C::Base: PrimeFieldBits,
-    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
-    C::Base: PrimeField<Repr = [u8; 32]>,
-{
+pub struct EccConfig<C: PastaCurve, FixedPoints: super::FixedPoints<C>> {
     /// Advice columns needed by instructions in the ECC chip.
     pub advices: [Column<Advice>; 10],
 
@@ -210,7 +224,7 @@ impl FixedScalarKind for BaseFieldElem {
 /// TODO: When associated consts can be used as const generics, introduce a
 /// `const NUM_WINDOWS: usize` associated const, and return `NUM_WINDOWS`-sized
 /// arrays instead of `Vec`s.
-pub trait FixedPoint<C: CurveAffine>: std::fmt::Debug + Eq + Clone {
+pub trait FixedPoint<C: PastaCurve>: std::fmt::Debug + Eq + Clone {
     /// The kind of scalar that this fixed point can be multiplied by.
     type FixedScalarKind: FixedScalarKind;
 
@@ -231,21 +245,11 @@ pub trait FixedPoint<C: CurveAffine>: std::fmt::Debug + Eq + Clone {
 
 /// An [`EccInstructions`] chip that uses 10 advice columns.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EccChip<C: CurveAffine, FixedPoints: super::FixedPoints<C>>
-where
-    C::Base: PrimeFieldBits,
-    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
-    C::Base: PrimeField<Repr = [u8; 32]>,
-{
+pub struct EccChip<C: PastaCurve, FixedPoints: super::FixedPoints<C>> {
     config: EccConfig<C, FixedPoints>,
 }
 
-impl<C: CurveAffine, FixedPoints: super::FixedPoints<C>> Chip<C::Base> for EccChip<C, FixedPoints>
-where
-    C::Base: PrimeFieldBits,
-    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
-    C::Base: PrimeField<Repr = [u8; 32]>,
-{
+impl<C: PastaCurve, FixedPoints: super::FixedPoints<C>> Chip<C::Base> for EccChip<C, FixedPoints> {
     type Config = EccConfig<C, FixedPoints>;
     type Loaded = ();
 
@@ -258,22 +262,13 @@ where
     }
 }
 
-impl<C: CurveAffine, Fixed: super::FixedPoints<C>> UtilitiesInstructions<C::Base>
+impl<C: PastaCurve, Fixed: super::FixedPoints<C>> UtilitiesInstructions<C::Base>
     for EccChip<C, Fixed>
-where
-    C::Base: PrimeFieldBits,
-    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
-    C::Base: PrimeField<Repr = [u8; 32]>,
 {
     type Var = AssignedCell<C::Base, C::Base>;
 }
 
-impl<C: CurveAffine, FixedPoints: super::FixedPoints<C>> EccChip<C, FixedPoints>
-where
-    C::Base: PrimeFieldBits,
-    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
-    C::Base: PrimeField<Repr = [u8; 32]>,
-{
+impl<C: PastaCurve, FixedPoints: super::FixedPoints<C>> EccChip<C, FixedPoints> {
     /// Reconstructs this chip from the given config.
     pub fn construct(config: <Self as Chip<C::Base>>::Config) -> Self {
         Self { config }
@@ -351,7 +346,7 @@ where
 /// where `scalar = k_0 + k_1 * (2^3) + ... + k_84 * (2^3)^84` and
 /// each `k_i` is in the range [0..2^3).
 #[derive(Clone, Debug)]
-pub struct EccScalarFixed<C: CurveAffine> {
+pub struct EccScalarFixed<C: PastaCurve> {
     value: Value<C::Scalar>,
     /// The circuit-assigned windows representing this scalar, or `None` if the scalar has
     /// not been used yet.
@@ -377,7 +372,7 @@ type MagnitudeSign<C> = (MagnitudeCell<C>, SignCell<C>);
 /// each `k_i` is in the range [0..2^3).
 /// k_21 must be a single bit, i.e. 0 or 1.
 #[derive(Clone, Debug)]
-pub struct EccScalarFixedShort<C: CurveAffine> {
+pub struct EccScalarFixedShort<C: PastaCurve> {
     magnitude: MagnitudeCell<C>,
     sign: SignCell<C>,
     /// The circuit-assigned running sum constraining this signed short scalar, or `None`
@@ -395,12 +390,12 @@ pub struct EccScalarFixedShort<C: CurveAffine> {
 /// Since z_0 is initialized as the scalar α, we store it as
 /// `base_field_elem`.
 #[derive(Clone, Debug)]
-struct EccBaseFieldElemFixed<C: CurveAffine> {
+struct EccBaseFieldElemFixed<C: PastaCurve> {
     base_field_elem: AssignedCell<C::Base, C::Base>,
     running_sum: ArrayVec<AssignedCell<C::Base, C::Base>, { NUM_WINDOWS + 1 }>,
 }
 
-impl<C: CurveAffine> EccBaseFieldElemFixed<C> {
+impl<C: PastaCurve> EccBaseFieldElemFixed<C> {
     #![allow(dead_code)]
     fn base_field_elem(&self) -> AssignedCell<C::Base, C::Base> {
         self.base_field_elem.clone()
@@ -410,7 +405,7 @@ impl<C: CurveAffine> EccBaseFieldElemFixed<C> {
 /// An enumeration of the possible types of scalars used in variable-base
 /// multiplication.
 #[derive(Clone, Debug)]
-pub enum ScalarVar<C: CurveAffine> {
+pub enum ScalarVar<C: PastaCurve> {
     // todo check semantics of changing to vesta! Maybe it has to stay pallas?
     /// An element of the elliptic curve's base field, that is used as a scalar
     /// in variable-base scalar mul.
@@ -430,15 +425,11 @@ pub enum ScalarVar<C: CurveAffine> {
     FullWidth,
 }
 
-impl<C: CurveAffine, Fixed: FixedPoints<C>> EccInstructions<C> for EccChip<C, Fixed>
+impl<C: PastaCurve, Fixed: FixedPoints<C>> EccInstructions<C> for EccChip<C, Fixed>
 where
     <Fixed as FixedPoints<C>>::Base: FixedPoint<C, FixedScalarKind = BaseFieldElem>,
     <Fixed as FixedPoints<C>>::FullScalar: FixedPoint<C, FixedScalarKind = FullScalar>,
     <Fixed as FixedPoints<C>>::ShortScalar: FixedPoint<C, FixedScalarKind = ShortScalar>,
-    C::Base: PrimeFieldBits,
-    C::ScalarExt: PrimeFieldBits,
-    C::ScalarExt: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
-    C::Base: PrimeField<Repr = [u8; 32]>,
 {
     type ScalarFixed = EccScalarFixed<C>;
     type ScalarFixedShort = EccScalarFixedShort<C>;
@@ -618,14 +609,11 @@ where
     }
 }
 
-impl<C: CurveAffine, Fixed: FixedPoints<C>> BaseFitsInScalarInstructions<C> for EccChip<C, Fixed>
+impl<C: PastaCurve, Fixed: FixedPoints<C>> BaseFitsInScalarInstructions<C> for EccChip<C, Fixed>
 where
     <Fixed as FixedPoints<C>>::Base: FixedPoint<C, FixedScalarKind = BaseFieldElem>,
     <Fixed as FixedPoints<C>>::FullScalar: FixedPoint<C, FixedScalarKind = FullScalar>,
     <Fixed as FixedPoints<C>>::ShortScalar: FixedPoint<C, FixedScalarKind = ShortScalar>,
-    C::Base: PrimeFieldBits,
-    C::Scalar: PrimeField<Repr = <C::Base as PrimeField>::Repr> + PrimeFieldBits,
-    C::Base: PrimeField<Repr = [u8; 32]>,
 {
     fn scalar_var_from_base(
         &self,
