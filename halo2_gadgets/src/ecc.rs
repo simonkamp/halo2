@@ -577,60 +577,54 @@ impl<C: CurveAffine, EccChip: EccInstructions<C>> FixedPointShort<C, EccChip> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::marker::PhantomData;
+
     use ff::PrimeField;
-    use group::{prime::PrimeCurveAffine, Curve, Group};
+    use group::{Curve, Group};
 
     use halo2_proofs::{
         circuit::{Layouter, SimpleFloorPlanner, Value},
         dev::MockProver,
         plonk::{Circuit, ConstraintSystem, Error},
     };
-    use lazy_static::lazy_static;
     use pasta_curves::pallas;
 
     use super::{
         chip::{
-            find_zs_and_us, BaseFieldElem, EccChip, EccConfig, FixedPoint, FullScalar, ShortScalar,
-            H, NUM_WINDOWS, NUM_WINDOWS_SHORT,
+            BaseFieldElem, EccChip, EccConfig, FixedPoint, FullScalar, PastaCurve, ShortScalar, H,
         },
         FixedPoints,
     };
     use crate::utilities::lookup_range_check::LookupRangeCheckConfig;
 
     #[derive(Debug, Eq, PartialEq, Clone)]
-    pub(crate) struct TestFixedBases;
+    pub(crate) struct TestFixedBases<C: PastaCurve>(PhantomData<C>);
     #[derive(Debug, Eq, PartialEq, Clone)]
-    pub(crate) struct FullWidth(pallas::Affine, &'static [(u64, [pallas::Base; H])]);
-    #[derive(Debug, Eq, PartialEq, Clone)]
-    pub(crate) struct BaseField;
-    #[derive(Debug, Eq, PartialEq, Clone)]
-    pub(crate) struct Short;
+    pub(crate) struct FullWidth<C: PastaCurve>(C, &'static [(u64, [C::Base; H])]);
+    #[derive(Debug, Eq, PartialEq, Clone, Default)]
+    pub(crate) struct BaseField<C: PastaCurve>(PhantomData<C>);
+    #[derive(Debug, Eq, PartialEq, Clone, Default)]
+    pub(crate) struct Short<C: PastaCurve>(PhantomData<C>);
 
-    lazy_static! {
-        static ref BASE: pallas::Affine = pallas::Point::generator().to_affine();
-        static ref ZS_AND_US: Vec<(u64, [pallas::Base; H])> =
-            find_zs_and_us(*BASE, NUM_WINDOWS).unwrap();
-        static ref ZS_AND_US_SHORT: Vec<(u64, [pallas::Base; H])> =
-            find_zs_and_us(*BASE, NUM_WINDOWS_SHORT).unwrap();
+    fn base<C: PastaCurve>() -> C {
+        C::generator()
     }
 
-    impl FullWidth {
+    impl<C: PastaCurve> FullWidth<C> {
         pub(crate) fn from_pallas_generator() -> Self {
-            FullWidth(*BASE, &ZS_AND_US)
+            // todo name
+            FullWidth(base::<C>(), C::zs_and_us())
         }
 
-        pub(crate) fn from_parts(
-            base: pallas::Affine,
-            zs_and_us: &'static [(u64, [pallas::Base; H])],
-        ) -> Self {
+        pub(crate) fn from_parts(base: C, zs_and_us: &'static [(u64, [C::Base; H])]) -> Self {
             FullWidth(base, zs_and_us)
         }
     }
 
-    impl FixedPoint<pallas::Affine> for FullWidth {
+    impl<C: PastaCurve> FixedPoint<C> for FullWidth<C> {
         type FixedScalarKind = FullScalar;
 
-        fn generator(&self) -> pallas::Affine {
+        fn generator(&self) -> C {
             self.0
         }
 
@@ -657,15 +651,15 @@ pub(crate) mod tests {
         }
     }
 
-    impl FixedPoint<pallas::Affine> for BaseField {
+    impl<C: PastaCurve> FixedPoint<C> for BaseField<C> {
         type FixedScalarKind = BaseFieldElem;
 
-        fn generator(&self) -> pallas::Affine {
-            *BASE
+        fn generator(&self) -> C {
+            base()
         }
 
         fn u(&self) -> Vec<[[u8; 32]; H]> {
-            ZS_AND_US
+            C::zs_and_us()
                 .iter()
                 .map(|(_, us)| {
                     [
@@ -683,19 +677,19 @@ pub(crate) mod tests {
         }
 
         fn z(&self) -> Vec<u64> {
-            ZS_AND_US.iter().map(|(z, _)| *z).collect()
+            C::zs_and_us().iter().map(|(z, _)| *z).collect()
         }
     }
 
-    impl FixedPoint<pallas::Affine> for Short {
+    impl<C: PastaCurve> FixedPoint<C> for Short<C> {
         type FixedScalarKind = ShortScalar;
 
-        fn generator(&self) -> pallas::Affine {
-            *BASE
+        fn generator(&self) -> C {
+            base()
         }
 
         fn u(&self) -> Vec<[[u8; 32]; H]> {
-            ZS_AND_US_SHORT
+            C::zs_and_us_short()
                 .iter()
                 .map(|(_, us)| {
                     [
@@ -713,30 +707,34 @@ pub(crate) mod tests {
         }
 
         fn z(&self) -> Vec<u64> {
-            ZS_AND_US_SHORT.iter().map(|(z, _)| *z).collect()
+            C::zs_and_us_short().iter().map(|(z, _)| *z).collect()
         }
     }
 
-    impl FixedPoints<pallas::Affine> for TestFixedBases {
-        type FullScalar = FullWidth;
-        type ShortScalar = Short;
-        type Base = BaseField;
+    impl<C: PastaCurve> FixedPoints<C> for TestFixedBases<C> {
+        type FullScalar = FullWidth<C>;
+        type ShortScalar = Short<C>;
+        type Base = BaseField<C>;
     }
 
-    struct MyCircuit {
+    struct MyCircuit<C: PastaCurve> {
         test_errors: bool,
+        _ph: PhantomData<C>,
     }
 
     #[allow(non_snake_case)]
-    impl Circuit<pallas::Base> for MyCircuit {
-        type Config = EccConfig<pallas::Affine, TestFixedBases>;
+    impl<C: PastaCurve> Circuit<C::Base> for MyCircuit<C> {
+        type Config = EccConfig<C, TestFixedBases<C>>;
         type FloorPlanner = SimpleFloorPlanner;
 
         fn without_witnesses(&self) -> Self {
-            MyCircuit { test_errors: false }
+            MyCircuit {
+                test_errors: false,
+                _ph: PhantomData::<C>::default(),
+            }
         }
 
-        fn configure(meta: &mut ConstraintSystem<pallas::Base>) -> Self::Config {
+        fn configure(meta: &mut ConstraintSystem<C::Base>) -> Self::Config {
             let advices = [
                 meta.advice_column(),
                 meta.advice_column(),
@@ -765,18 +763,13 @@ pub(crate) mod tests {
             meta.enable_constant(constants);
 
             let range_check = LookupRangeCheckConfig::configure(meta, advices[9], lookup_table);
-            EccChip::<pallas::Affine, TestFixedBases>::configure(
-                meta,
-                advices,
-                lagrange_coeffs,
-                range_check,
-            )
+            EccChip::<C, TestFixedBases<C>>::configure(meta, advices, lagrange_coeffs, range_check)
         }
 
         fn synthesize(
             &self,
             config: Self::Config,
-            mut layouter: impl Layouter<pallas::Base>,
+            mut layouter: impl Layouter<C::Base>,
         ) -> Result<(), Error> {
             let chip = EccChip::construct(config.clone());
 
@@ -785,7 +778,7 @@ pub(crate) mod tests {
             config.lookup_config.load(&mut layouter)?;
 
             // Generate a random non-identity point P
-            let p_val = pallas::Point::random(rand::rngs::OsRng).to_affine(); // P
+            let p_val = C::CurveExt::random(rand::rngs::OsRng).to_affine(); // P
             let p = super::NonIdentityPoint::new(
                 chip.clone(),
                 layouter.namespace(|| "P"),
@@ -799,7 +792,7 @@ pub(crate) mod tests {
             )?;
 
             // Generate a random non-identity point Q
-            let q_val = pallas::Point::random(rand::rngs::OsRng).to_affine(); // Q
+            let q_val = C::CurveExt::random(rand::rngs::OsRng).to_affine(); // Q
             let q = super::NonIdentityPoint::new(
                 chip.clone(),
                 layouter.namespace(|| "Q"),
@@ -814,13 +807,13 @@ pub(crate) mod tests {
                 let _ = super::Point::new(
                     chip.clone(),
                     layouter.namespace(|| "identity"),
-                    Value::known(pallas::Affine::identity()),
+                    Value::known(C::identity()),
                 )?;
 
                 super::NonIdentityPoint::new(
                     chip.clone(),
                     layouter.namespace(|| "identity"),
-                    Value::known(pallas::Affine::identity()),
+                    Value::known(C::identity()),
                 )
                 .expect_err("Trying to witness the identity should return an error");
             }
@@ -901,7 +894,10 @@ pub(crate) mod tests {
     #[test]
     fn ecc_chip() {
         let k = 13;
-        let circuit = MyCircuit { test_errors: true };
+        let circuit = MyCircuit {
+            test_errors: true,
+            _ph: PhantomData::<pallas::Affine>::default(),
+        };
         let prover = MockProver::run(k, &circuit, vec![]).unwrap();
         assert_eq!(prover.verify(), Ok(()))
     }

@@ -506,8 +506,10 @@ pub(crate) mod tests {
     // This test does not make use of the CommitDomain.
     #[derive(Debug, Clone, Eq, PartialEq)]
     pub(crate) struct TestCommitDomain;
-    impl CommitDomains<pallas::Affine, TestFixedBases, TestHashDomain> for TestCommitDomain {
-        fn r(&self) -> FullWidth {
+    impl CommitDomains<pallas::Affine, TestFixedBases<pallas::Affine>, TestHashDomain>
+        for TestCommitDomain
+    {
+        fn r(&self) -> FullWidth<pallas::Affine> {
             FullWidth::from_parts(*R, &R_ZS_AND_US)
         }
 
@@ -521,9 +523,9 @@ pub(crate) mod tests {
     impl Circuit<pallas::Base> for MyCircuit {
         #[allow(clippy::type_complexity)]
         type Config = (
-            EccConfig<pallas::Affine, TestFixedBases>,
-            SinsemillaConfig<TestHashDomain, TestCommitDomain, TestFixedBases>,
-            SinsemillaConfig<TestHashDomain, TestCommitDomain, TestFixedBases>,
+            EccConfig<pallas::Affine, TestFixedBases<pallas::Affine>>,
+            SinsemillaConfig<TestHashDomain, TestCommitDomain, TestFixedBases<pallas::Affine>>,
+            SinsemillaConfig<TestHashDomain, TestCommitDomain, TestFixedBases<pallas::Affine>>,
         );
         type FloorPlanner = SimpleFloorPlanner;
 
@@ -571,7 +573,7 @@ pub(crate) mod tests {
 
             let range_check = LookupRangeCheckConfig::configure(meta, advices[9], table_idx);
 
-            let ecc_config = EccChip::<pallas::Affine, TestFixedBases>::configure(
+            let ecc_config = EccChip::<pallas::Affine, TestFixedBases<pallas::Affine>>::configure(
                 meta,
                 advices,
                 lagrange_coeffs,
@@ -607,7 +609,7 @@ pub(crate) mod tests {
             let ecc_chip = EccChip::construct(config.0);
 
             // The two `SinsemillaChip`s share the same lookup table.
-            SinsemillaChip::<TestHashDomain, TestCommitDomain, TestFixedBases>::load(
+            SinsemillaChip::<TestHashDomain, TestCommitDomain, TestFixedBases<pallas::Affine>>::load(
                 config.1.clone(),
                 &mut layouter,
             )?;

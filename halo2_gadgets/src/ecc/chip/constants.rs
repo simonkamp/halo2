@@ -26,14 +26,6 @@ pub const NUM_WINDOWS_SHORT: usize =
 /// Number of bits in an unsigned short scalar.
 pub(crate) const L_SCALAR_SHORT: usize = 64;
 
-/// The Pallas scalar field modulus is $q = 2^{254} + \mathsf{t_q}$.
-/// <https://github.com/zcash/pasta>
-pub(crate) const T_Q: u128 = 45560315531506369815346746415080538113; // todo check usage - used only in mul and overflow, I think we can ignore
-
-/// The Pallas base field modulus is $p = 2^{254} + \mathsf{t_p}$.
-/// <https://github.com/zcash/pasta>
-pub(crate) const T_P: u128 = 45560315531419706090280762371685220353; // todo check usage - used in base_field_elem, we need to fix it. Compute it from C::Base::MODULUS or something?
-
 /// For each fixed base, we calculate its scalar multiples in three-bit windows.
 /// Each window will have $2^3 = 8$ points. The tables are computed as described in
 /// [the Halo 2 book](https://zcash.github.io/halo2/design/gadgets/ecc/fixed-base-scalar-mul.html#load-fixed-base).

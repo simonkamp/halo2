@@ -1,5 +1,4 @@
-use super::super::{EccBaseFieldElemFixed, EccPoint, FixedPoints, NUM_WINDOWS, T_P};
-use super::h_base;
+use super::super::{EccBaseFieldElemFixed, EccPoint, FixedPoints, NUM_WINDOWS};
 
 use crate::ecc::chip::PastaCurve;
 use crate::utilities::bool_check;
@@ -26,6 +25,7 @@ pub struct Config<C: PastaCurve, Fixed: FixedPoints<C>> {
     super_config: super::Config<C, Fixed>,
 }
 
+// todo check compatibility with vesta
 impl<C: PastaCurve, Fixed: FixedPoints<C>> Config<C, Fixed> {
     pub(crate) fn configure(
         meta: &mut ConstraintSystem<C::Base>,
@@ -101,7 +101,7 @@ impl<C: PastaCurve, Fixed: FixedPoints<C>> Config<C, Fixed> {
             // Check α_0_prime = α_0 + 2^130 - t_p
             let alpha_0_prime_check = {
                 let two_pow_130 = Expression::Constant(C::Base::from_u128(1 << 65).square());
-                let t_p = Expression::Constant(C::Base::from_u128(T_P)); // todo pallas specific constant
+                let t_p = Expression::Constant(C::Base::from_u128(C::T_P));
                 alpha_0_prime - (alpha_0 + two_pow_130 - t_p)
             };
 
@@ -132,7 +132,7 @@ impl<C: PastaCurve, Fixed: FixedPoints<C>> Config<C, Fixed> {
                     z_44_alpha.clone() - z_84_alpha * two_pow_120
                 };
                 // a_43 = z_43 - (2^3)z_44
-                let a_43 = z_43_alpha - z_44_alpha * h_base::<C>();
+                let a_43 = z_43_alpha - z_44_alpha * *C::h_base();
 
                 std::iter::empty()
                     .chain(Some(("MSB = 1 => alpha_1 = 0", alpha_2.clone() * alpha_1)))
@@ -232,7 +232,7 @@ impl<C: PastaCurve, Fixed: FixedPoints<C>> Config<C, Fixed> {
                 .assert_if_known(|(real_mul, result)| &real_mul.to_affine() == result);
         }
 
-        // todo
+        // todo vesta
         // We want to enforce canonicity of a 255-bit base field element, α.
         // That is, we want to check that 0 ≤ α < p, where p is Pallas base
         // field modulus p = 2^254 + t_p
@@ -270,7 +270,7 @@ impl<C: PastaCurve, Fixed: FixedPoints<C>> Config<C, Fixed> {
             // alpha_0_prime = alpha + 2^130 - t_p.
             let alpha_0_prime = alpha_0.map(|alpha_0| {
                 let two_pow_130 = C::Base::from_u128(1 << 65).square();
-                let t_p = C::Base::from_u128(T_P); // todo pallas specific constant
+                let t_p = C::Base::from_u128(C::T_P);
                 alpha_0 + two_pow_130 - t_p
             });
             let zs = self.lookup_config.witness_check(
@@ -386,50 +386,49 @@ pub mod tests {
         circuit::{Chip, Layouter, Value},
         plonk::Error,
     };
-    use pasta_curves::pallas;
     use rand::rngs::OsRng;
 
     use crate::{
         ecc::{
-            chip::{EccChip, FixedPoint, H},
+            chip::{EccChip, FixedPoint, PastaCurve, H},
             tests::{BaseField, TestFixedBases},
             FixedPointBaseField, NonIdentityPoint, Point,
         },
         utilities::UtilitiesInstructions,
     };
 
-    pub(crate) fn test_mul_fixed_base_field(
-        chip: EccChip<pallas::Affine, TestFixedBases>,
-        mut layouter: impl Layouter<pallas::Base>,
+    pub(crate) fn test_mul_fixed_base_field<C: PastaCurve>(
+        chip: EccChip<C, TestFixedBases<C>>,
+        mut layouter: impl Layouter<C::Base>,
     ) -> Result<(), Error> {
         test_single_base(
             chip.clone(),
             layouter.namespace(|| "base_field_elem"),
-            FixedPointBaseField::from_inner(chip, BaseField),
-            BaseField.generator(),
+            FixedPointBaseField::from_inner(chip, BaseField::default()),
+            BaseField::default().generator(),
         )
     }
 
     #[allow(clippy::op_ref)]
-    fn test_single_base(
-        chip: EccChip<pallas::Affine, TestFixedBases>,
-        mut layouter: impl Layouter<pallas::Base>,
-        base: FixedPointBaseField<pallas::Affine, EccChip<pallas::Affine, TestFixedBases>>,
-        base_val: pallas::Affine,
+    fn test_single_base<C: PastaCurve>(
+        chip: EccChip<C, TestFixedBases<C>>,
+        mut layouter: impl Layouter<C::Base>,
+        base: FixedPointBaseField<C, EccChip<C, TestFixedBases<C>>>,
+        base_val: C,
     ) -> Result<(), Error> {
         let rng = OsRng;
 
         let column = chip.config().advices[0];
 
-        fn constrain_equal_non_id(
-            chip: EccChip<pallas::Affine, TestFixedBases>,
-            mut layouter: impl Layouter<pallas::Base>,
-            base_val: pallas::Affine,
-            scalar_val: pallas::Base,
-            result: Point<pallas::Affine, EccChip<pallas::Affine, TestFixedBases>>,
+        fn constrain_equal_non_id<C: PastaCurve>(
+            chip: EccChip<C, TestFixedBases<C>>,
+            mut layouter: impl Layouter<C::Base>,
+            base_val: C,
+            scalar_val: C::Base,
+            result: Point<C, EccChip<C, TestFixedBases<C>>>,
         ) -> Result<(), Error> {
             // Move scalar from base field into scalar field (which always fits for Pallas).
-            let scalar = pallas::Scalar::from_repr(scalar_val.to_repr()).unwrap();
+            let scalar = C::Scalar::from_repr(scalar_val.to_repr()).unwrap();
             let expected = NonIdentityPoint::new(
                 chip,
                 layouter.namespace(|| "expected point"),
@@ -440,7 +439,7 @@ pub mod tests {
 
         // [a]B
         {
-            let scalar_fixed = pallas::Base::random(rng);
+            let scalar_fixed = C::Base::random(rng);
             let result = {
                 let scalar_fixed = chip.load_private(
                     layouter.namespace(|| "random base field element"),
@@ -463,11 +462,11 @@ pub mod tests {
         // (There is another *non-canonical* sequence
         // 5333333333333333333333333333333333333333332711161673731021062440252244051273333333333 in octal.)
         {
-            let h = pallas::Base::from(H as u64);
+            let h = C::Base::from(H as u64);
             let scalar_fixed = "1333333333333333333333333333333333333333333333333333333333333333333333333333333333334"
                         .chars()
-                        .fold(pallas::Base::zero(), |acc, c| {
-                            acc * &h + &pallas::Base::from(c.to_digit(8).unwrap() as u64)
+                        .fold(C::Base::ZERO, |acc, c| {
+                            acc * &h + &C::Base::from(c.to_digit(8).unwrap() as u64)
                         });
             let result = {
                 let scalar_fixed = chip.load_private(
@@ -489,7 +488,7 @@ pub mod tests {
         // [0]B should return (0,0) since it uses complete addition
         // on the last step.
         {
-            let scalar_fixed = pallas::Base::zero();
+            let scalar_fixed = C::Base::ZERO;
             let result = {
                 let scalar_fixed = chip.load_private(
                     layouter.namespace(|| "zero"),
@@ -506,7 +505,7 @@ pub mod tests {
 
         // [-1]B is the largest base field element
         {
-            let scalar_fixed = -pallas::Base::one();
+            let scalar_fixed = -C::Base::ONE;
             let result = {
                 let scalar_fixed = chip.load_private(
                     layouter.namespace(|| "-1"),

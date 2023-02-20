@@ -209,8 +209,8 @@ pub mod tests {
 
     impl Circuit<pallas::Base> for MyCircuit {
         type Config = (
-            MerkleConfig<TestHashDomain, TestCommitDomain, TestFixedBases>,
-            MerkleConfig<TestHashDomain, TestCommitDomain, TestFixedBases>,
+            MerkleConfig<TestHashDomain, TestCommitDomain, TestFixedBases<pallas::Affine>>,
+            MerkleConfig<TestHashDomain, TestCommitDomain, TestFixedBases<pallas::Affine>>,
         );
         type FloorPlanner = SimpleFloorPlanner;
 
@@ -279,7 +279,7 @@ pub mod tests {
             mut layouter: impl Layouter<pallas::Base>,
         ) -> Result<(), Error> {
             // Load generator table (shared across both configs)
-            SinsemillaChip::<TestHashDomain, TestCommitDomain, TestFixedBases>::load(
+            SinsemillaChip::<TestHashDomain, TestCommitDomain, TestFixedBases<pallas::Affine>>::load(
                 config.0.sinsemilla_config.clone(),
                 &mut layouter,
             )?;

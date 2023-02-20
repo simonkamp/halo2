@@ -247,9 +247,11 @@ impl<C: PastaCurve, Fixed: FixedPoints<C>> Config<C, Fixed> {
 
 #[cfg(test)]
 pub mod tests {
-    use group::{ff::PrimeField, Curve};
+    use group::{
+        ff::{Field, PrimeField},
+        Curve,
+    };
     use halo2_proofs::{
-        arithmetic::CurveAffine,
         circuit::{AssignedCell, Chip, Layouter, Value},
         plonk::{Any, Error},
     };
@@ -257,7 +259,7 @@ pub mod tests {
 
     use crate::{
         ecc::{
-            chip::{EccChip, FixedPoint, MagnitudeSign},
+            chip::{EccChip, FixedPoint, MagnitudeSign, PastaCurve},
             tests::{Short, TestFixedBases},
             FixedPointShort, NonIdentityPoint, Point, ScalarFixedShort,
         },
@@ -265,20 +267,20 @@ pub mod tests {
     };
 
     #[allow(clippy::op_ref)]
-    pub(crate) fn test_mul_fixed_short(
-        chip: EccChip<pallas::Affine, TestFixedBases>,
-        mut layouter: impl Layouter<pallas::Base>,
+    pub(crate) fn test_mul_fixed_short<C: PastaCurve>(
+        chip: EccChip<C, TestFixedBases<C>>,
+        mut layouter: impl Layouter<C::Base>,
     ) -> Result<(), Error> {
         // test_short
-        let base_val = Short.generator();
-        let test_short = FixedPointShort::from_inner(chip.clone(), Short);
+        let base_val = Short::default().generator();
+        let test_short = FixedPointShort::from_inner(chip.clone(), Short::default());
 
-        fn load_magnitude_sign(
-            chip: EccChip<pallas::Affine, TestFixedBases>,
-            mut layouter: impl Layouter<pallas::Base>,
-            magnitude: pallas::Base,
-            sign: pallas::Base,
-        ) -> Result<MagnitudeSign<pallas::Affine>, Error> {
+        fn load_magnitude_sign<C: PastaCurve>(
+            chip: EccChip<C, TestFixedBases<C>>,
+            mut layouter: impl Layouter<C::Base>,
+            magnitude: C::Base,
+            sign: C::Base,
+        ) -> Result<MagnitudeSign<C>, Error> {
             let column = chip.config().advices[0];
             let magnitude = chip.load_private(
                 layouter.namespace(|| "magnitude"),
@@ -291,12 +293,12 @@ pub mod tests {
             Ok((magnitude, sign))
         }
 
-        fn constrain_equal_non_id(
-            chip: EccChip<pallas::Affine, TestFixedBases>,
-            mut layouter: impl Layouter<pallas::Base>,
-            base_val: pallas::Affine,
-            scalar_val: pallas::Scalar,
-            result: Point<pallas::Affine, EccChip<pallas::Affine, TestFixedBases>>,
+        fn constrain_equal_non_id<C: PastaCurve>(
+            chip: EccChip<C, TestFixedBases<C>>,
+            mut layouter: impl Layouter<C::Base>,
+            base_val: C,
+            scalar_val: C::Scalar,
+            result: Point<C, EccChip<C, TestFixedBases<C>>>,
         ) -> Result<(), Error> {
             let expected = NonIdentityPoint::new(
                 chip,
@@ -307,8 +309,8 @@ pub mod tests {
         }
 
         let magnitude_signs = [
-            ("random [a]B", pallas::Base::from(rand::random::<u64>()), {
-                let mut random_sign = pallas::Base::one();
+            ("random [a]B", C::Base::from(rand::random::<u64>()), {
+                let mut random_sign = C::Base::ONE;
                 if rand::random::<bool>() {
                     random_sign = -random_sign;
                 }
@@ -316,26 +318,26 @@ pub mod tests {
             }),
             (
                 "[2^64 - 1]B",
-                pallas::Base::from(0xFFFF_FFFF_FFFF_FFFFu64),
-                pallas::Base::one(),
+                C::Base::from(0xFFFF_FFFF_FFFF_FFFFu64),
+                C::Base::ONE,
             ),
             (
                 "-[2^64 - 1]B",
-                pallas::Base::from(0xFFFF_FFFF_FFFF_FFFFu64),
-                -pallas::Base::one(),
+                C::Base::from(0xFFFF_FFFF_FFFF_FFFFu64),
+                -C::Base::ONE,
             ),
             // There is a single canonical sequence of window values for which a doubling occurs on the last step:
             // 1333333333333333333334 in octal.
             // [0xB6DB_6DB6_DB6D_B6DC] B
             (
                 "mul_with_double",
-                pallas::Base::from(0xB6DB_6DB6_DB6D_B6DCu64),
-                pallas::Base::one(),
+                C::Base::from(0xB6DB_6DB6_DB6D_B6DCu64),
+                C::Base::ONE,
             ),
             (
                 "mul_with_double negative",
-                pallas::Base::from(0xB6DB_6DB6_DB6D_B6DCu64),
-                -pallas::Base::one(),
+                C::Base::from(0xB6DB_6DB6_DB6D_B6DCu64),
+                -C::Base::ONE,
             ),
         ];
 
@@ -356,11 +358,11 @@ pub mod tests {
             };
             // Move from base field into scalar field
             let scalar = {
-                let magnitude = pallas::Scalar::from_repr(magnitude.to_repr()).unwrap();
-                let sign = if *sign == pallas::Base::one() {
-                    pallas::Scalar::one()
+                let magnitude = C::Scalar::from_repr(magnitude.to_repr()).unwrap();
+                let sign = if *sign == C::Base::ONE {
+                    C::Scalar::ONE
                 } else {
-                    -pallas::Scalar::one()
+                    -C::Scalar::ONE
                 };
                 magnitude * sign
             };
@@ -374,8 +376,8 @@ pub mod tests {
         }
 
         let zero_magnitude_signs = [
-            ("mul by +zero", pallas::Base::zero(), pallas::Base::one()),
-            ("mul by -zero", pallas::Base::zero(), -pallas::Base::one()),
+            ("mul by +zero", C::Base::ZERO, C::Base::ONE),
+            ("mul by -zero", C::Base::ZERO, -C::Base::ONE),
         ];
 
         for (name, magnitude, sign) in zero_magnitude_signs.iter() {
@@ -404,37 +406,38 @@ pub mod tests {
 
     #[test]
     fn invalid_magnitude_sign() {
-        use crate::{
-            ecc::chip::{EccConfig, FixedPoint},
-            utilities::UtilitiesInstructions,
-        };
+        invalid_magnitude_sign_generic::<pallas::Affine>()
+    }
+
+    fn invalid_magnitude_sign_generic<C: PastaCurve>() {
+        use crate::ecc::chip::EccConfig;
         use halo2_proofs::{
-            circuit::{Layouter, SimpleFloorPlanner},
+            circuit::SimpleFloorPlanner,
             dev::{FailureLocation, MockProver, VerifyFailure},
-            plonk::{Circuit, ConstraintSystem, Error},
+            plonk::{Circuit, ConstraintSystem},
         };
 
         #[derive(Default)]
-        struct MyCircuit {
-            magnitude: Value<pallas::Base>,
-            sign: Value<pallas::Base>,
+        struct MyCircuit<C: PastaCurve> {
+            magnitude: Value<C::Base>,
+            sign: Value<C::Base>,
             // For test checking
-            magnitude_error: Value<pallas::Base>,
+            magnitude_error: Value<C::Base>,
         }
 
-        impl UtilitiesInstructions<pallas::Base> for MyCircuit {
-            type Var = AssignedCell<pallas::Base, pallas::Base>;
+        impl<C: PastaCurve> UtilitiesInstructions<C::Base> for MyCircuit<C> {
+            type Var = AssignedCell<C::Base, C::Base>;
         }
 
-        impl Circuit<pallas::Base> for MyCircuit {
-            type Config = EccConfig<pallas::Affine, TestFixedBases>;
+        impl<C: PastaCurve> Circuit<C::Base> for MyCircuit<C> {
+            type Config = EccConfig<C, TestFixedBases<C>>;
             type FloorPlanner = SimpleFloorPlanner;
 
             fn without_witnesses(&self) -> Self {
                 Self::default()
             }
 
-            fn configure(meta: &mut ConstraintSystem<pallas::Base>) -> Self::Config {
+            fn configure(meta: &mut ConstraintSystem<C::Base>) -> Self::Config {
                 let advices = [
                     meta.advice_column(),
                     meta.advice_column(),
@@ -464,7 +467,7 @@ pub mod tests {
                 meta.enable_constant(constants);
 
                 let range_check = LookupRangeCheckConfig::configure(meta, advices[9], lookup_table);
-                EccChip::<pallas::Affine, TestFixedBases>::configure(
+                EccChip::<C, TestFixedBases<C>>::configure(
                     meta,
                     advices,
                     lagrange_coeffs,
@@ -475,7 +478,7 @@ pub mod tests {
             fn synthesize(
                 &self,
                 config: Self::Config,
-                mut layouter: impl Layouter<pallas::Base>,
+                mut layouter: impl Layouter<C::Base>,
             ) -> Result<(), Error> {
                 let column = config.advices[0];
 
@@ -495,20 +498,19 @@ pub mod tests {
                     )?
                 };
 
-                short_config.assign(layouter, &magnitude_sign.inner, &Short)?;
+                short_config.assign(layouter, &magnitude_sign.inner, &Short::default())?;
 
                 Ok(())
             }
         }
 
         // Copied from halo2_proofs::dev::util
-        fn format_value(v: pallas::Base) -> String {
-            use ff::Field;
+        fn format_value<C: PastaCurve>(v: C::Base) -> String {
             if v.is_zero_vartime() {
                 "0".into()
-            } else if v == pallas::Base::one() {
+            } else if v == C::Base::ONE {
                 "1".into()
-            } else if v == -pallas::Base::one() {
+            } else if v == -C::Base::ONE {
                 "-1".into()
             } else {
                 // Format value as hex.
@@ -524,49 +526,49 @@ pub mod tests {
         {
             let circuits = [
                 // 2^64
-                MyCircuit {
-                    magnitude: Value::known(pallas::Base::from_u128(1 << 64)),
-                    sign: Value::known(pallas::Base::one()),
-                    magnitude_error: Value::known(pallas::Base::from(1 << 1)),
+                MyCircuit::<C> {
+                    magnitude: Value::known(C::Base::from_u128(1 << 64)),
+                    sign: Value::known(C::Base::ONE),
+                    magnitude_error: Value::known(C::Base::from(1 << 1)),
                 },
                 // -2^64
                 MyCircuit {
-                    magnitude: Value::known(pallas::Base::from_u128(1 << 64)),
-                    sign: Value::known(-pallas::Base::one()),
-                    magnitude_error: Value::known(pallas::Base::from(1 << 1)),
+                    magnitude: Value::known(C::Base::from_u128(1 << 64)),
+                    sign: Value::known(-C::Base::ONE),
+                    magnitude_error: Value::known(C::Base::from(1 << 1)),
                 },
                 // 2^66
                 MyCircuit {
-                    magnitude: Value::known(pallas::Base::from_u128(1 << 66)),
-                    sign: Value::known(pallas::Base::one()),
-                    magnitude_error: Value::known(pallas::Base::from(1 << 3)),
+                    magnitude: Value::known(C::Base::from_u128(1 << 66)),
+                    sign: Value::known(C::Base::ONE),
+                    magnitude_error: Value::known(C::Base::from(1 << 3)),
                 },
                 // -2^66
                 MyCircuit {
-                    magnitude: Value::known(pallas::Base::from_u128(1 << 66)),
-                    sign: Value::known(-pallas::Base::one()),
-                    magnitude_error: Value::known(pallas::Base::from(1 << 3)),
+                    magnitude: Value::known(C::Base::from_u128(1 << 66)),
+                    sign: Value::known(-C::Base::ONE),
+                    magnitude_error: Value::known(C::Base::from(1 << 3)),
                 },
                 // 2^254
                 MyCircuit {
-                    magnitude: Value::known(pallas::Base::from_u128(1 << 127).square()),
-                    sign: Value::known(pallas::Base::one()),
+                    magnitude: Value::known(C::Base::from_u128(1 << 127).square()),
+                    sign: Value::known(C::Base::ONE),
                     magnitude_error: Value::known(
-                        pallas::Base::from_u128(1 << 95).square() * pallas::Base::from(2),
+                        C::Base::from_u128(1 << 95).square() * C::Base::from(2),
                     ),
                 },
                 // -2^254
                 MyCircuit {
-                    magnitude: Value::known(pallas::Base::from_u128(1 << 127).square()),
-                    sign: Value::known(-pallas::Base::one()),
+                    magnitude: Value::known(C::Base::from_u128(1 << 127).square()),
+                    sign: Value::known(-C::Base::ONE),
                     magnitude_error: Value::known(
-                        pallas::Base::from_u128(1 << 95).square() * pallas::Base::from(2),
+                        C::Base::from_u128(1 << 95).square() * C::Base::from(2),
                     ),
                 },
             ];
 
             for circuit in circuits.iter() {
-                let prover = MockProver::<pallas::Base>::run(11, circuit, vec![]).unwrap();
+                let prover = MockProver::<C::Base>::run(11, circuit, vec![]).unwrap();
                 circuit.magnitude_error.assert_if_known(|magnitude_error| {
                     assert_eq!(
                         prover.verify(),
@@ -585,7 +587,7 @@ pub mod tests {
                                 },
                                 cell_values: vec![(
                                     ((Any::Advice, 5).into(), 0).into(),
-                                    format_value(*magnitude_error),
+                                    format_value::<C>(*magnitude_error),
                                 )],
                             },
                             VerifyFailure::Permutation {
@@ -610,21 +612,21 @@ pub mod tests {
         // Sign that is not +/- 1 should fail
         {
             let magnitude_u64 = rand::random::<u64>();
-            let circuit = MyCircuit {
-                magnitude: Value::known(pallas::Base::from(magnitude_u64)),
-                sign: Value::known(pallas::Base::zero()),
+            let circuit = MyCircuit::<C> {
+                magnitude: Value::known(C::Base::from(magnitude_u64)),
+                sign: Value::known(C::Base::ZERO),
                 magnitude_error: Value::unknown(),
             };
 
             let negation_check_y = {
-                *(Short.generator() * pallas::Scalar::from(magnitude_u64))
+                *(Short::<C>::default().generator() * C::Scalar::from(magnitude_u64))
                     .to_affine()
                     .coordinates()
                     .unwrap()
                     .y()
             };
 
-            let prover = MockProver::<pallas::Base>::run(11, &circuit, vec![]).unwrap();
+            let prover = MockProver::<C::Base>::run(11, &circuit, vec![]).unwrap();
             assert_eq!(
                 prover.verify(),
                 Err(vec![
@@ -651,11 +653,11 @@ pub mod tests {
                         cell_values: vec![
                             (
                                 ((Any::Advice, 1).into(), 0).into(),
-                                format_value(negation_check_y),
+                                format_value::<C>(negation_check_y),
                             ),
                             (
                                 ((Any::Advice, 3).into(), 0).into(),
-                                format_value(negation_check_y),
+                                format_value::<C>(negation_check_y),
                             ),
                             (((Any::Advice, 4).into(), 0).into(), "0".to_string()),
                         ],

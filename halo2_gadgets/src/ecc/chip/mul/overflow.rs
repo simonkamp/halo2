@@ -1,4 +1,4 @@
-use super::{T_Q, Z};
+use super::Z;
 use crate::ecc::chip::PastaCurve;
 use crate::{
     sinsemilla::primitives as sinsemilla, utilities::lookup_range_check::LookupRangeCheckConfig,
@@ -72,7 +72,7 @@ impl<C: PastaCurve> Config<C> {
 
             // q = 2^254 + t_q is the Pallas scalar field modulus.
             // We cast t_q into the base field to check alpha + t_q (mod p).
-            let t_q = Expression::Constant(C::Base::from_u128(T_Q));
+            let t_q = Expression::Constant(C::Base::from_u128(C::T_Q)); // todo vesta?
 
             // z_0 - alpha - t_q = 0 (mod p)
             let recovery = z_0 - alpha - t_q;

@@ -1,4 +1,4 @@
-use super::{add, EccPoint, NonIdentityEccPoint, PastaCurve, ScalarVar, T_Q};
+use super::{add, EccPoint, NonIdentityEccPoint, PastaCurve, ScalarVar};
 use crate::{
     sinsemilla::primitives as sinsemilla,
     utilities::{bool_check, lookup_range_check::LookupRangeCheckConfig, ternary},
@@ -429,7 +429,7 @@ fn decompose_for_scalar_mul<C: PastaCurve>(scalar: Value<&C::Base>) -> Vec<Value
         // Note that the addition `scalar + t_q` is not reduced.
         //
         let scalar = U256::from_little_endian(&scalar.to_repr());
-        let t_q = U256::from_little_endian(&T_Q.to_le_bytes());
+        let t_q = U256::from_little_endian(&C::T_Q.to_le_bytes());
         let k = scalar + t_q;
 
         // Little-endian bit representation of `k`.
@@ -465,42 +465,39 @@ pub mod tests {
         plonk::Error,
     };
 
-    use pasta_curves::pallas;
     use rand::rngs::OsRng;
 
     use crate::{
         ecc::{
-            chip::{EccChip, EccPoint},
+            chip::{EccChip, EccPoint, PastaCurve},
             tests::TestFixedBases,
             EccInstructions, NonIdentityPoint, Point, ScalarVar,
         },
         utilities::UtilitiesInstructions,
     };
 
-    pub(crate) fn test_mul(
-        chip: EccChip<pallas::Affine, TestFixedBases>,
-        mut layouter: impl Layouter<pallas::Base>,
-        p: &NonIdentityPoint<pallas::Affine, EccChip<pallas::Affine, TestFixedBases>>,
-        p_val: pallas::Affine,
+    pub(crate) fn test_mul<C: PastaCurve>(
+        chip: EccChip<C, TestFixedBases<C>>,
+        mut layouter: impl Layouter<C::Base>,
+        p: &NonIdentityPoint<C, EccChip<C, TestFixedBases<C>>>,
+        p_val: C,
     ) -> Result<(), Error> {
         let column = chip.config().advices[0];
 
         fn constrain_equal_non_id<
-            EccChip: EccInstructions<pallas::Affine, Point = EccPoint<pallas::Affine>>
-                + Clone
-                + Eq
-                + std::fmt::Debug,
+            C: PastaCurve,
+            EccChip: EccInstructions<C, Point = EccPoint<C>> + Clone + Eq + std::fmt::Debug,
         >(
             chip: EccChip,
-            mut layouter: impl Layouter<pallas::Base>,
-            base_val: pallas::Affine,
-            scalar_val: pallas::Base,
-            result: Point<pallas::Affine, EccChip>,
+            mut layouter: impl Layouter<C::Base>,
+            base_val: C,
+            scalar_val: C::Base,
+            result: Point<C, EccChip>,
         ) -> Result<(), Error> {
             // Move scalar from base field into scalar field (which always fits
             // for Pallas).
             // todo check Vesta
-            let scalar = pallas::Scalar::from_repr(scalar_val.to_repr()).unwrap();
+            let scalar = C::Scalar::from_repr(scalar_val.to_repr()).unwrap();
             let expected = NonIdentityPoint::new(
                 chip,
                 layouter.namespace(|| "expected point"),
@@ -511,7 +508,7 @@ pub mod tests {
 
         // [a]B
         {
-            let scalar_val = pallas::Base::random(OsRng);
+            let scalar_val = C::Base::random(OsRng);
             let (result, _) = {
                 let scalar = chip.load_private(
                     layouter.namespace(|| "random scalar"),
@@ -537,7 +534,7 @@ pub mod tests {
         // [0]B should return (0,0) since variable-base scalar multiplication
         // uses complete addition for the final bits of the scalar.
         {
-            let scalar_val = pallas::Base::zero();
+            let scalar_val = C::Base::ZERO;
             let (result, _) = {
                 let scalar = chip.load_private(
                     layouter.namespace(|| "zero"),
@@ -559,7 +556,7 @@ pub mod tests {
 
         // [-1]B (the largest possible base field element)
         {
-            let scalar_val = -pallas::Base::one();
+            let scalar_val = -C::Base::ONE;
             let (result, _) = {
                 let scalar = chip.load_private(
                     layouter.namespace(|| "-1"),

@@ -187,18 +187,17 @@ pub mod tests {
         circuit::{Layouter, Value},
         plonk::Error,
     };
-    use pasta_curves::pallas;
     use rand::rngs::OsRng;
 
     use crate::ecc::{
-        chip::{EccChip, FixedPoint as _, H},
+        chip::{EccChip, FixedPoint as _, PastaCurve, H},
         tests::{FullWidth, TestFixedBases},
         FixedPoint, NonIdentityPoint, Point, ScalarFixed,
     };
 
-    pub(crate) fn test_mul_fixed(
-        chip: EccChip<pallas::Affine, TestFixedBases>,
-        mut layouter: impl Layouter<pallas::Base>,
+    pub(crate) fn test_mul_fixed<C: PastaCurve>(
+        chip: EccChip<C, TestFixedBases<C>>,
+        mut layouter: impl Layouter<C::Base>,
     ) -> Result<(), Error> {
         let test_base = FullWidth::from_pallas_generator();
         test_single_base(
@@ -212,18 +211,18 @@ pub mod tests {
     }
 
     #[allow(clippy::op_ref)]
-    fn test_single_base(
-        chip: EccChip<pallas::Affine, TestFixedBases>,
-        mut layouter: impl Layouter<pallas::Base>,
-        base: FixedPoint<pallas::Affine, EccChip<pallas::Affine, TestFixedBases>>,
-        base_val: pallas::Affine,
+    fn test_single_base<C: PastaCurve>(
+        chip: EccChip<C, TestFixedBases<C>>,
+        mut layouter: impl Layouter<C::Base>,
+        base: FixedPoint<C, EccChip<C, TestFixedBases<C>>>,
+        base_val: C,
     ) -> Result<(), Error> {
-        fn constrain_equal_non_id(
-            chip: EccChip<pallas::Affine, TestFixedBases>,
-            mut layouter: impl Layouter<pallas::Base>,
-            base_val: pallas::Affine,
-            scalar_val: pallas::Scalar,
-            result: Point<pallas::Affine, EccChip<pallas::Affine, TestFixedBases>>,
+        fn constrain_equal_non_id<C: PastaCurve>(
+            chip: EccChip<C, TestFixedBases<C>>,
+            mut layouter: impl Layouter<C::Base>,
+            base_val: C,
+            scalar_val: C::Scalar,
+            result: Point<C, EccChip<C, TestFixedBases<C>>>,
         ) -> Result<(), Error> {
             let expected = NonIdentityPoint::new(
                 chip,
@@ -235,7 +234,7 @@ pub mod tests {
 
         // [a]B
         {
-            let scalar_fixed = pallas::Scalar::random(OsRng);
+            let scalar_fixed = C::Scalar::random(OsRng);
             let by = ScalarFixed::new(
                 chip.clone(),
                 layouter.namespace(|| "random a"),
@@ -258,12 +257,10 @@ pub mod tests {
         // 5333333333333333333333333333333333333333332711161673731021062440252244051273333333333 in octal.)
         {
             const LAST_DOUBLING: &str = "1333333333333333333333333333333333333333333333333333333333333333333333333333333333334";
-            let h = pallas::Scalar::from(H as u64);
-            let scalar_fixed = LAST_DOUBLING
-                .chars()
-                .fold(pallas::Scalar::zero(), |acc, c| {
-                    acc * &h + &pallas::Scalar::from(c.to_digit(8).unwrap() as u64)
-                });
+            let h = C::Scalar::from(H as u64);
+            let scalar_fixed = LAST_DOUBLING.chars().fold(C::Scalar::ZERO, |acc, c| {
+                acc * &h + &C::Scalar::from(c.to_digit(8).unwrap() as u64)
+            });
             let by = ScalarFixed::new(
                 chip.clone(),
                 layouter.namespace(|| LAST_DOUBLING),
@@ -283,7 +280,7 @@ pub mod tests {
         // [0]B should return (0,0) since it uses complete addition
         // on the last step.
         {
-            let scalar_fixed = pallas::Scalar::zero();
+            let scalar_fixed = C::Scalar::ZERO;
             let zero = ScalarFixed::new(
                 chip.clone(),
                 layouter.namespace(|| "0"),
@@ -298,7 +295,7 @@ pub mod tests {
 
         // [-1]B is the largest scalar field element.
         {
-            let scalar_fixed = -pallas::Scalar::one();
+            let scalar_fixed = -C::Scalar::ONE;
             let neg_1 = ScalarFixed::new(
                 chip.clone(),
                 layouter.namespace(|| "-1"),

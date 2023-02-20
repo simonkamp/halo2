@@ -12,7 +12,7 @@ use halo2_proofs::{
     circuit::{AssignedCell, Chip, Layouter, Value},
     plonk::{Advice, Assigned, Column, ConstraintSystem, Error, Fixed},
 };
-use pasta_curves::arithmetic::CurveAffine;
+use pasta_curves::{arithmetic::CurveAffine, pallas, vesta};
 
 use std::convert::TryInto;
 
@@ -24,6 +24,11 @@ pub(super) mod mul_fixed;
 pub(super) mod witness_point;
 
 pub use constants::*;
+
+#[cfg(test)]
+use group::{Curve, Group};
+
+use lazy_static::lazy_static;
 
 // Exposed for Sinsemilla.
 pub(crate) use mul::incomplete::DoubleAndAdd;
@@ -47,19 +52,129 @@ pub struct EccPoint<C: PastaCurve> {
 /// TODO: This could be more cleanly expressed using the unstable associated_type_bounds feature.
 pub trait PastaCurve: CurveAffine<Base = Self::PastaBase, ScalarExt = Self::PastaScalar> {
     /// bla bla
-    type PastaBase: PrimeFieldBits + PrimeField<Repr = [u8; 32]> + std::cmp::PartialOrd;
+    type PastaBase: PrimeFieldBits + PrimeField<Repr = [u8; 32]> + PartialOrd + Ord + Sized;
     /// bla
-    type PastaScalar: PrimeFieldBits + PrimeField<Repr = [u8; 32]> + std::cmp::PartialOrd;
+    type PastaScalar: PrimeFieldBits + PrimeField<Repr = [u8; 32]> + PartialOrd;
+
+    /// The scalar field modulus is $q = 2^{254} + \mathsf{t_q}$.
+    const T_Q: u128;
+
+    /// The base field modulus is $p = 2^{254} + \mathsf{t_p}$.
+    const T_P: u128;
+
+    /// todo
+    fn two_scalar() -> &'static Self::Scalar;
+    /// todo
+    fn h_scalar() -> &'static Self::Scalar;
+    /// todo
+    fn h_base() -> &'static Self::Base;
+
+    #[cfg(test)]
+    fn base() -> &'static Self;
+
+    #[cfg(test)]
+    fn zs_and_us() -> &'static [(u64, [Self::Base; H])];
+
+    #[cfg(test)]
+    fn zs_and_us_short() -> &'static [(u64, [Self::Base; H])];
 }
 
-impl<C> PastaCurve for C
-where
-    C: CurveAffine,
-    C::Base: PrimeFieldBits + PrimeField<Repr = [u8; 32]>,
-    C::Scalar: PrimeFieldBits + PrimeField<Repr = [u8; 32]>,
-{
-    type PastaBase = C::Base;
-    type PastaScalar = C::Scalar;
+#[cfg(test)]
+lazy_static! {
+    static ref PALLAS_BASE: pallas::Affine = pallas::Point::generator().to_affine();
+    static ref PALLAS_ZS_AND_US: Vec<(u64, [pallas::Base; H])> =
+        find_zs_and_us(*PALLAS_BASE, NUM_WINDOWS).unwrap();
+    static ref PALLAS_ZS_AND_US_SHORT: Vec<(u64, [pallas::Base; H])> =
+        find_zs_and_us(*PALLAS_BASE, NUM_WINDOWS_SHORT).unwrap();
+    static ref VESTA_BASE: vesta::Affine = vesta::Point::generator().to_affine();
+    static ref VESTA_ZS_AND_US: Vec<(u64, [vesta::Base; H])> =
+        find_zs_and_us(*VESTA_BASE, NUM_WINDOWS).unwrap();
+    static ref VESTA_ZS_AND_US_SHORT: Vec<(u64, [vesta::Base; H])> =
+        find_zs_and_us(*VESTA_BASE, NUM_WINDOWS_SHORT).unwrap();
+}
+
+lazy_static! {
+    static ref PALLAS_TWO_SCALAR: pallas::Scalar = pallas::Scalar::from(2);
+    // H = 2^3 (3-bit window)
+    static ref PALLAS_H_SCALAR: pallas::Scalar = pallas::Scalar::from(H as u64);
+    static ref PALLAS_H_BASE: pallas::Base = pallas::Base::from(H as u64);
+
+    static ref VESTA_TWO_SCALAR: vesta::Scalar = vesta::Scalar::from(2);
+    // H = 2^3 (3-bit window)
+    static ref VESTA_H_SCALAR: vesta::Scalar = vesta::Scalar::from(H as u64);
+    static ref VESTA_H_BASE: vesta::Base = vesta::Base::from(H as u64);
+}
+
+impl PastaCurve for pallas::Affine {
+    type PastaBase = pallas::Base;
+    type PastaScalar = pallas::Scalar;
+
+    const T_Q: u128 = 45560315531506369815346746415080538113;
+
+    const T_P: u128 = 45560315531419706090280762371685220353;
+
+    fn two_scalar() -> &'static Self::Scalar {
+        &PALLAS_TWO_SCALAR
+    }
+
+    fn h_scalar() -> &'static Self::Scalar {
+        &PALLAS_H_SCALAR
+    }
+
+    fn h_base() -> &'static Self::Base {
+        &PALLAS_H_BASE
+    }
+
+    #[cfg(test)]
+    fn base() -> &'static Self {
+        &PALLAS_BASE
+    }
+
+    #[cfg(test)]
+    fn zs_and_us() -> &'static [(u64, [Self::Base; H])] {
+        &PALLAS_ZS_AND_US
+    }
+
+    #[cfg(test)]
+    fn zs_and_us_short() -> &'static [(u64, [Self::Base; H])] {
+        &PALLAS_ZS_AND_US_SHORT
+    }
+}
+
+impl PastaCurve for vesta::Affine {
+    type PastaBase = vesta::Base;
+    type PastaScalar = vesta::Scalar;
+
+    const T_Q: u128 = 45560315531419706090280762371685220353;
+
+    const T_P: u128 = 45560315531506369815346746415080538113;
+
+    fn two_scalar() -> &'static Self::Scalar {
+        &VESTA_TWO_SCALAR
+    }
+
+    fn h_scalar() -> &'static Self::Scalar {
+        &VESTA_H_SCALAR
+    }
+
+    fn h_base() -> &'static Self::Base {
+        &VESTA_H_BASE
+    }
+
+    #[cfg(test)]
+    fn base() -> &'static Self {
+        &VESTA_BASE
+    }
+
+    #[cfg(test)]
+    fn zs_and_us() -> &'static [(u64, [Self::Base; H])] {
+        &VESTA_ZS_AND_US
+    }
+
+    #[cfg(test)]
+    fn zs_and_us_short() -> &'static [(u64, [Self::Base; H])] {
+        &VESTA_ZS_AND_US_SHORT
+    }
 }
 
 impl<C: PastaCurve> EccPoint<C> {

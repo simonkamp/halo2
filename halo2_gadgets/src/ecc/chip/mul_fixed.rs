@@ -23,17 +23,6 @@ pub mod base_field_elem;
 pub mod full_width;
 pub mod short;
 
-fn two_scalar<C: PastaCurve>() -> C::Scalar {
-    C::Scalar::from(2)
-}
-
-fn h_scalar<C: PastaCurve>() -> C::Scalar {
-    C::Scalar::from(H as u64)
-}
-fn h_base<C: PastaCurve>() -> C::Base {
-    C::Base::from(H as u64)
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config<C: PastaCurve, FixedPoints: super::FixedPoints<C>> {
     running_sum_config: RunningSumConfig<C::Base, FIXED_BASE_WINDOW_SIZE>,
@@ -371,8 +360,7 @@ impl<C: PastaCurve, FixedPoints: super::FixedPoints<C>> Config<C, FixedPoints> {
         base: &F,
     ) -> Result<NonIdentityEccPoint<C>, Error> {
         // `scalar = [(k_w + 2) ⋅ 8^w]
-        let scalar =
-            k.map(|k| (k + two_scalar::<C>()) * (h_scalar::<C>()).pow(&[w as u64, 0, 0, 0]));
+        let scalar = k.map(|k| (k + C::two_scalar()) * (C::h_scalar()).pow(&[w as u64, 0, 0, 0]));
 
         self.process_window::<_, NUM_WINDOWS>(region, offset, w, k_usize, scalar, base)
     }
@@ -389,12 +377,12 @@ impl<C: PastaCurve, FixedPoints: super::FixedPoints<C>> Config<C, FixedPoints> {
 
         // offset_acc = \sum_{j = 0}^{NUM_WINDOWS - 2} 2^{FIXED_BASE_WINDOW_SIZE*j + 1}
         let offset_acc = (0..(NUM_WINDOWS - 1)).fold(C::Scalar::ZERO, |acc, w| {
-            acc + (two_scalar::<C>()).pow(&[FIXED_BASE_WINDOW_SIZE as u64 * w as u64 + 1, 0, 0, 0])
+            acc + (C::two_scalar()).pow(&[FIXED_BASE_WINDOW_SIZE as u64 * w as u64 + 1, 0, 0, 0])
         });
 
         // `scalar = [k * 8^(NUM_WINDOWS - 1) - offset_acc]`.
         let scalar = scalar.windows_field()[scalar.windows_field().len() - 1]
-            .map(|k| k * (h_scalar::<C>()).pow(&[(NUM_WINDOWS - 1) as u64, 0, 0, 0]) - offset_acc);
+            .map(|k| k * (C::h_scalar()).pow(&[(NUM_WINDOWS - 1) as u64, 0, 0, 0]) - offset_acc);
 
         self.process_window::<_, NUM_WINDOWS>(
             region,
@@ -443,7 +431,7 @@ impl<C: PastaCurve> ScalarFixed<C> {
                 .map(|idx| {
                     let z_cur = zs[idx].value();
                     let z_next = zs[idx + 1].value();
-                    let word = z_cur.cloned() - z_next.cloned() * Value::known(h_base::<C>()); // todo inf recursion in type checker
+                    let word = z_cur.cloned() - z_next.cloned() * Value::known(C::h_base()); // todo inf recursion in type checker
 
                     // This assumes that the endianness of the encodings of pallas::Base
                     // and pallas::Scalar are the same. They happen to be, but we need to
