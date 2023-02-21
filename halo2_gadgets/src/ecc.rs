@@ -719,6 +719,8 @@ pub(crate) mod tests {
 
     struct MyCircuit<C: PastaCurve> {
         test_errors: bool,
+        test_var_mul: bool,
+        test_fixed_base_mul: bool,
         _ph: PhantomData<C>,
     }
 
@@ -730,6 +732,8 @@ pub(crate) mod tests {
         fn without_witnesses(&self) -> Self {
             MyCircuit {
                 test_errors: false,
+                test_var_mul: true,
+                test_fixed_base_mul: true,
                 _ph: PhantomData::<C>::default(),
             }
         }
@@ -853,16 +857,16 @@ pub(crate) mod tests {
                 )?;
             }
 
-            // todo fails using vesta
-            // // Test variable-base scalar multiplication
-            // {
-            //     super::chip::mul::tests::test_mul(
-            //         chip.clone(),
-            //         layouter.namespace(|| "variable-base scalar mul"),
-            //         &p,
-            //         p_val,
-            //     )?;
-            // }
+            // Test variable-base scalar multiplication
+            if self.test_var_mul {
+                // todo fails using vesta
+                super::chip::mul::tests::test_mul(
+                    chip.clone(),
+                    layouter.namespace(|| "variable-base scalar mul"),
+                    &p,
+                    p_val,
+                )?;
+            }
 
             // Test full-width fixed-base scalar multiplication
             {
@@ -880,14 +884,14 @@ pub(crate) mod tests {
                 )?;
             }
 
-            // todo fails using vesta
-            // // Test fixed-base scalar multiplication with a base field element
-            // {
-            //     super::chip::mul_fixed::base_field_elem::tests::test_mul_fixed_base_field(
-            //         chip,
-            //         layouter.namespace(|| "fixed-base scalar mul with base field element"),
-            //     )?;
-            // }
+            // Test fixed-base scalar multiplication with a base field element
+            if self.test_fixed_base_mul {
+                // todo fails using vesta
+                super::chip::mul_fixed::base_field_elem::tests::test_mul_fixed_base_field(
+                    chip,
+                    layouter.namespace(|| "fixed-base scalar mul with base field element"),
+                )?;
+            }
 
             Ok(())
         }
@@ -895,18 +899,30 @@ pub(crate) mod tests {
 
     #[test]
     fn pallas_ecc_chip() {
-        ecc_chip_generic::<pallas::Affine>()
+        ecc_chip_generic::<pallas::Affine>(true, true)
     }
 
     #[test]
     fn vesta_ecc_chip() {
-        ecc_chip_generic::<vesta::Affine>()
+        ecc_chip_generic::<vesta::Affine>(false, false)
     }
 
-    fn ecc_chip_generic<C: PastaCurve>() {
+    #[test]
+    fn vesta_ecc_chip_var_mul() {
+        ecc_chip_generic::<vesta::Affine>(true, false)
+    }
+
+    #[test]
+    fn vesta_ecc_chip_fixed_base_mul() {
+        ecc_chip_generic::<vesta::Affine>(false, true)
+    }
+
+    fn ecc_chip_generic<C: PastaCurve>(test_var_mul: bool, test_fixed_base_mul: bool) {
         let k = 13;
         let circuit = MyCircuit {
             test_errors: true,
+            test_var_mul,
+            test_fixed_base_mul,
             _ph: PhantomData::<C>::default(),
         };
         let prover = MockProver::run(k, &circuit, vec![]).unwrap();
