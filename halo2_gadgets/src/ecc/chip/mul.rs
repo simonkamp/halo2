@@ -481,6 +481,7 @@ pub mod tests {
         mut layouter: impl Layouter<C::Base>,
         p: &NonIdentityPoint<C, EccChip<C, TestFixedBases<C>>>,
         p_val: C,
+        test_largest: bool,
     ) -> Result<(), Error> {
         let column = chip.config().advices[0];
 
@@ -555,7 +556,7 @@ pub mod tests {
         }
 
         // [-1]B (the largest possible base field element)
-        {
+        if test_largest {
             let scalar_val = -C::Base::ONE;
             let (result, _) = {
                 let scalar = chip.load_private(

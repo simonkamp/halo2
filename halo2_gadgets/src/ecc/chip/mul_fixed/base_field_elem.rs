@@ -400,12 +400,14 @@ pub mod tests {
     pub(crate) fn test_mul_fixed_base_field<C: PastaCurve>(
         chip: EccChip<C, TestFixedBases<C>>,
         mut layouter: impl Layouter<C::Base>,
+        test_largest: bool, // Test largest base field element. This does not fit for Vesta.
     ) -> Result<(), Error> {
         test_single_base(
             chip.clone(),
             layouter.namespace(|| "base_field_elem"),
             FixedPointBaseField::from_inner(chip, BaseField::default()),
             BaseField::default().generator(),
+            test_largest,
         )
     }
 
@@ -415,6 +417,7 @@ pub mod tests {
         mut layouter: impl Layouter<C::Base>,
         base: FixedPointBaseField<C, EccChip<C, TestFixedBases<C>>>,
         base_val: C,
+        test_largest: bool,
     ) -> Result<(), Error> {
         let rng = OsRng;
 
@@ -504,7 +507,7 @@ pub mod tests {
         }
 
         // [-1]B is the largest base field element
-        {
+        if test_largest {
             let scalar_fixed = -C::Base::ONE;
             let result = {
                 let scalar_fixed = chip.load_private(

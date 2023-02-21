@@ -719,8 +719,8 @@ pub(crate) mod tests {
 
     struct MyCircuit<C: PastaCurve> {
         test_errors: bool,
-        test_var_mul: bool,
-        test_fixed_base_mul: bool,
+        test_var_mul_largest: bool,
+        test_fixed_base_mul_largest: bool,
         _ph: PhantomData<C>,
     }
 
@@ -732,8 +732,8 @@ pub(crate) mod tests {
         fn without_witnesses(&self) -> Self {
             MyCircuit {
                 test_errors: false,
-                test_var_mul: true,
-                test_fixed_base_mul: true,
+                test_var_mul_largest: true,
+                test_fixed_base_mul_largest: true,
                 _ph: PhantomData::<C>::default(),
             }
         }
@@ -858,13 +858,13 @@ pub(crate) mod tests {
             }
 
             // Test variable-base scalar multiplication
-            if self.test_var_mul {
-                // todo fails using vesta
+            {
                 super::chip::mul::tests::test_mul(
                     chip.clone(),
                     layouter.namespace(|| "variable-base scalar mul"),
                     &p,
                     p_val,
+                    self.test_var_mul_largest,
                 )?;
             }
 
@@ -885,11 +885,11 @@ pub(crate) mod tests {
             }
 
             // Test fixed-base scalar multiplication with a base field element
-            if self.test_fixed_base_mul {
-                // todo fails using vesta
+            {
                 super::chip::mul_fixed::base_field_elem::tests::test_mul_fixed_base_field(
                     chip,
                     layouter.namespace(|| "fixed-base scalar mul with base field element"),
+                    self.test_fixed_base_mul_largest,
                 )?;
             }
 
@@ -917,12 +917,15 @@ pub(crate) mod tests {
         ecc_chip_generic::<vesta::Affine>(false, true)
     }
 
-    fn ecc_chip_generic<C: PastaCurve>(test_var_mul: bool, test_fixed_base_mul: bool) {
+    fn ecc_chip_generic<C: PastaCurve>(
+        test_var_mul_largest: bool,
+        test_fixed_base_mul_largest: bool,
+    ) {
         let k = 13;
         let circuit = MyCircuit {
             test_errors: true,
-            test_var_mul,
-            test_fixed_base_mul,
+            test_var_mul_largest,
+            test_fixed_base_mul_largest,
             _ph: PhantomData::<C>::default(),
         };
         let prover = MockProver::run(k, &circuit, vec![]).unwrap();
