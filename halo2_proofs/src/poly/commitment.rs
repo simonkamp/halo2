@@ -160,6 +160,11 @@ impl<C: CurveAffine> Params<C> {
         self.g.clone()
     }
 
+    /// Getter for the w blinding generator
+    pub fn get_w(&self) -> C {
+        self.w
+    }
+
     /// Writes params to a buffer.
     pub fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&self.k.to_le_bytes())?;

@@ -7,7 +7,7 @@ use crate::{
 };
 use arrayvec::ArrayVec;
 
-use ff::{PrimeField, PrimeFieldBits};
+use ff::{PrimeField, PrimeFieldBits, WithSmallOrderMulGroup};
 use halo2_proofs::{
     circuit::{AssignedCell, Chip, Layouter, Value},
     plonk::{Advice, Assigned, Column, ConstraintSystem, Error, Fixed},
@@ -54,7 +54,10 @@ pub trait PastaCurve: CurveAffine<Base = Self::PastaBase, ScalarExt = Self::Past
     /// bla bla
     type PastaBase: PrimeFieldBits + PrimeField<Repr = [u8; 32]> + PartialOrd + Ord + Sized;
     /// bla
-    type PastaScalar: PrimeFieldBits + PrimeField<Repr = [u8; 32]> + PartialOrd;
+    type PastaScalar: PrimeFieldBits
+        + PrimeField<Repr = [u8; 32]>
+        + PartialOrd
+        + WithSmallOrderMulGroup<3>;
 
     /// The scalar field modulus is $q = 2^{254} + \mathsf{t_q}$.
     const T_Q: u128;

@@ -150,6 +150,7 @@ pub trait EccInstructions<C: CurveAffine>:
 /// Instructions that can be implemented for a curve whose base field fits into
 /// its scalar field.
 pub trait BaseFitsInScalarInstructions<C: CurveAffine>: EccInstructions<C> {
+    // todo should not be implemented for Vesta. Check if some operations make use of this fact without implementing.
     /// Converts a base field element that exists as a variable in the circuit
     /// into a scalar to be used in variable-base scalar multiplication.
     fn scalar_var_from_base(
