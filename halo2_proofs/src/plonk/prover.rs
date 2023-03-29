@@ -41,7 +41,7 @@ pub fn create_proof<
 >(
     params: &Params<C>,
     pk: &ProvingKey<C>,
-    circuits: &[ConcreteCircuit],
+    circuits: &[ConcreteCircuit], // todo multiple circuits are used for the possibility of batching several proofs. But I believe they have to be the same circuit because of the proving key being derived from the circuit? Maybe they just need to be of the same size?
     instances: &[&[&[C::Scalar]]],
     mut rng: R,
     transcript: &mut T,
@@ -126,10 +126,11 @@ pub fn create_proof<
         .collect::<Result<Vec<_>, _>>()?;
 
     struct AdviceSingle<C: CurveAffine> {
+        // single here refers to all the advice columns of a single proof, as far as I can tell.
         pub advice_values: Vec<Polynomial<C::Scalar, LagrangeCoeff>>,
         pub advice_polys: Vec<Polynomial<C::Scalar, Coeff>>,
         pub advice_cosets: Vec<Polynomial<C::Scalar, ExtendedLagrangeCoeff>>,
-        pub advice_blinds: Vec<Blind<C::Scalar>>,
+        pub advice_blinds: Vec<Blind<C::Scalar>>, // todo I would guess these values are used to blind the last rows? In that case we need to make sure that two columns used to commit to advice have blinds summing to zero
     }
 
     let advice: Vec<AdviceSingle<C>> = circuits
@@ -270,7 +271,7 @@ pub fn create_proof<
 
             let mut witness = WitnessCollection {
                 k: params.k,
-                advice: vec![domain.empty_lagrange_assigned(); meta.num_advice_columns],
+                advice: vec![domain.empty_lagrange_assigned(); meta.num_advice_columns], // all the advice columns for a single proof are initialized.
                 instances,
                 // The prover will not be allowed to assign values to advice
                 // cells that exist within inactive rows, which include some
@@ -279,6 +280,9 @@ pub fn create_proof<
                 usable_rows: ..unusable_rows_start,
                 _marker: std::marker::PhantomData,
             };
+            // todo in theory we could populate the "committed advice" columns here. It is probably better to do it during synthesize though.
+
+            //todo: does the floor planner move columns around/choose which advice columns to assign to? We need to know where the advice columns are
 
             // Synthesize the circuit to obtain the witness and other information.
             ConcreteCircuit::FloorPlanner::synthesize(
@@ -292,7 +296,10 @@ pub fn create_proof<
 
             // Add blinding factors to advice columns
             for advice in &mut advice {
+                // todo here we need to have the index and set the blinding scalars in the "vanished" columns to be the negative of the scalar in the column before (the committed advice).
                 for cell in &mut advice[unusable_rows_start..] {
+                    // todo this adds blinding elements to the last "blinding rows".
+                    // this is where we would need to enforce that (hopefully adjacent) commit and prove columns get `blinding scalar' and `- blinding scalar' respectively.
                     *cell = C::Scalar::random(&mut rng);
                 }
             }
@@ -300,8 +307,10 @@ pub fn create_proof<
             // Compute commitments to advice column polynomials
             let advice_blinds: Vec<_> = advice
                 .iter()
-                .map(|_| Blind(C::Scalar::random(&mut rng)))
+                .map(|_| Blind(C::Scalar::random(&mut rng))) // todo random blinds picked here. 1 pr column. This is the one used to blind the `w' I think. For this we should also enforce that the second column of the committed advice is the inverse of the first.
                 .collect();
+            // todo the above needs the index (in a for loop) and as with the other blinds make the scalar of the "0 polynomial" the negative of the one before it.
+            // We also need to have picked the scalar for the committed advice ahead of time so we can use it in the circuit. Alternatively we could remember the random choice and give it to the verifier, but that seems to needlessly complicate things to avoid having extra parameters.
             let advice_commitments_projective: Vec<_> = advice
                 .iter()
                 .zip(advice_blinds.iter())

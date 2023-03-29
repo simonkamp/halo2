@@ -62,8 +62,8 @@ impl<C: PastaCurve, Fixed: FixedPoints<C>> Config<C, Fixed> {
         offset: usize,
         scalar: Value<C::Scalar>,
     ) -> Result<EccScalarFixed<C>, Error> {
+        // pallas and vesta both have 255 bits
         let windows = self.decompose_scalar_fixed::<{ pallas::Scalar::NUM_BITS as usize }>(
-            // todo `generic parameters may not be used in const operations`
             scalar, offset, region,
         )?;
 

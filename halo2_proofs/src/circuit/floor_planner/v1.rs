@@ -25,7 +25,7 @@ mod strategy;
 /// - Regions are laid out using a greedy first-fit strategy, after sorting regions by
 ///   their "advice area" (number of advice columns * rows).
 #[derive(Debug)]
-pub struct V1;
+pub struct V1; // todo from the description above it seems safe to use this floor planner when we need the advice columns to stay untouched. Maybe to be safe we should test with the SimpleFloorPlanner initially.
 
 struct V1Plan<'a, F: Field, CS: Assignment<F> + 'a> {
     cs: &'a mut CS,

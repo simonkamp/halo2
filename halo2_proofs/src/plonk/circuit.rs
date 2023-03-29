@@ -453,6 +453,7 @@ pub trait FloorPlanner {
     ///   calls to `Circuit::default().synthesize(config, &mut layouter)`.
     /// - Call `circuit.synthesize(config, &mut layouter)` exactly once.
     fn synthesize<F: Field, CS: Assignment<F>, C: Circuit<F>>(
+        // todo this is called on the circuit when proving to get the advice columns. Figure out if advice columns get e.g. reordered or combined.
         cs: &mut CS,
         circuit: &C,
         config: C::Config,
@@ -1462,6 +1463,7 @@ impl<F: Field> ConstraintSystem<F> {
     /// Returns the minimum necessary rows that need to exist in order to
     /// account for e.g. blinding factors.
     pub fn minimum_rows(&self) -> usize {
+        // todo the number of unusable rows (used for blinding etc.)
         self.blinding_factors() // m blinding factors
             + 1 // for l_{-(m + 1)} (l_last)
             + 1 // for l_0 (just for extra breathing room for the permutation
