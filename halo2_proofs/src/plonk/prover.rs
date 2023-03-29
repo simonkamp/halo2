@@ -46,6 +46,26 @@ pub fn create_proof<
     mut rng: R,
     transcript: &mut T,
 ) -> Result<(), Error> {
+    create_commitment_proof(params, pk, circuits, vec![Vec::new().as_slice(); instances.len()].as_slice(), instances, rng, transcript)
+}
+
+/// todo add real documentation
+/// The intention is to provide a more general version of create proof, in which some advice columns refer to already committed values. 
+pub fn create_commitment_proof<
+    C: CurveAffine,
+    E: EncodedChallenge<C>,
+    R: RngCore,
+    T: TranscriptWrite<C, E>,
+    ConcreteCircuit: Circuit<C::Scalar>,
+>(
+    params: &Params<C>,
+    pk: &ProvingKey<C>,
+    circuits: &[ConcreteCircuit],
+    rerandomizations: &[&[C::Scalar]], // should be of the same length as instances. For each one, every scalar is the blinding scalar used for the w in the original commitment. TODO: should we use this w unchanged for the lookup column and then -w for the zero column, or should we use some w'and then w'-w?
+    instances: &[&[&[C::Scalar]]],
+    mut rng: R,
+    transcript: &mut T,
+) -> Result<(), Error> {
     if circuits.len() != instances.len() {
         return Err(Error::InvalidInstances);
     }
