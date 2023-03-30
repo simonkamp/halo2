@@ -1,5 +1,6 @@
 use ff::Field;
 use group::Curve;
+use maybe_rayon::prelude::IntoParallelRefMutIterator;
 use rand_core::RngCore;
 use std::iter;
 use std::ops::RangeTo;
@@ -51,6 +52,9 @@ pub fn create_proof<
 
 /// todo add real documentation
 /// The intention is to provide a more general version of create proof, in which some advice columns refer to already committed values. 
+/// The rerandomizations should be of the same length as instances. For each one, every scalar is the blinding scalar used for the w in the original commitment.
+///  We will use a fresh blinding scalar r' for the for the lookup column and then r'-r for the zero column.
+/// Note that both the `rerandomizations' and `instances' parameters refers to sets of rerandomizations and instances
 pub fn create_commitment_proof<
     C: CurveAffine,
     E: EncodedChallenge<C>,
@@ -61,11 +65,14 @@ pub fn create_commitment_proof<
     params: &Params<C>,
     pk: &ProvingKey<C>,
     circuits: &[ConcreteCircuit],
-    rerandomizations: &[&[C::Scalar]], // should be of the same length as instances. For each one, every scalar is the blinding scalar used for the w in the original commitment. TODO: should we use this w unchanged for the lookup column and then -w for the zero column, or should we use some w'and then w'-w?
+    rerandomizations: &[&[C::Scalar]],
     instances: &[&[&[C::Scalar]]],
     mut rng: R,
     transcript: &mut T,
 ) -> Result<(), Error> {
+    if circuits.len() != rerandomizations.len() {
+        return Err(Error::InvalidInstances); // todo error name
+    }
     if circuits.len() != instances.len() {
         return Err(Error::InvalidInstances);
     }
@@ -156,7 +163,8 @@ pub fn create_commitment_proof<
     let advice: Vec<AdviceSingle<C>> = circuits
         .iter()
         .zip(instances.iter())
-        .map(|(circuit, instances)| -> Result<AdviceSingle<C>, Error> {
+        .zip(rerandomizations.iter())
+        .map(|((circuit, instances),rerandomizations)| -> Result<AdviceSingle<C>, Error> {
             struct WitnessCollection<'a, F: Field> {
                 k: u32,
                 pub advice: Vec<Polynomial<Assigned<F>, LagrangeCoeff>>,
@@ -300,9 +308,6 @@ pub fn create_commitment_proof<
                 usable_rows: ..unusable_rows_start,
                 _marker: std::marker::PhantomData,
             };
-            // todo in theory we could populate the "committed advice" columns here. It is probably better to do it during synthesize though.
-
-            //todo: does the floor planner move columns around/choose which advice columns to assign to? We need to know where the advice columns are
 
             // Synthesize the circuit to obtain the witness and other information.
             ConcreteCircuit::FloorPlanner::synthesize(
@@ -312,25 +317,37 @@ pub fn create_commitment_proof<
                 meta.constants.clone(),
             )?;
 
-            let mut advice = batch_invert_assigned(witness.advice);
+            let mut advice = batch_invert_assigned(witness.advice); // todo why inversion? And will this be a problem for commit and prove?
+            if advice.len() < 2 * rerandomizations.len() {
+                // We need two advice columns for every committed advice.
+                return Err(Error::InvalidInstances); // todo error name
+            }
 
             // Add blinding factors to advice columns
-            for advice in &mut advice {
-                // todo here we need to have the index and set the blinding scalars in the "vanished" columns to be the negative of the scalar in the column before (the committed advice).
-                for cell in &mut advice[unusable_rows_start..] {
-                    // todo this adds blinding elements to the last "blinding rows".
-                    // this is where we would need to enforce that (hopefully adjacent) commit and prove columns get `blinding scalar' and `- blinding scalar' respectively.
-                    *cell = C::Scalar::random(&mut rng);
+            for column_index in 0..advice.len() {
+                // The first 2 * |rerandomizations| advice columns are used for the committed advice columns.
+                // Every pair of them should have the blinding factor at each generator sum to zero.
+                if column_index < 2 * rerandomizations.len() && column_index % 2 != 0 {
+                    for row_index in unusable_rows_start..advice[column_index].len() {
+                        advice[column_index][row_index] = - advice[column_index - 1][row_index];
+                    }
+                } else {
+                    for cell in &mut advice[column_index][unusable_rows_start..] {
+                        *cell = C::Scalar::random(&mut rng);
+                    }
                 }
             }
 
             // Compute commitments to advice column polynomials
-            let advice_blinds: Vec<_> = advice
+            let mut advice_blinds: Vec<_> = advice
                 .iter()
-                .map(|_| Blind(C::Scalar::random(&mut rng))) // todo random blinds picked here. 1 pr column. This is the one used to blind the `w' I think. For this we should also enforce that the second column of the committed advice is the inverse of the first.
+                .map(|_| Blind(C::Scalar::random(&mut rng)))
                 .collect();
-            // todo the above needs the index (in a for loop) and as with the other blinds make the scalar of the "0 polynomial" the negative of the one before it.
-            // We also need to have picked the scalar for the committed advice ahead of time so we can use it in the circuit. Alternatively we could remember the random choice and give it to the verifier, but that seems to needlessly complicate things to avoid having extra parameters.
+            // The procedure above selected random blinds for all advice columns, in a second pass we adjust the pairs of advice columns representing a committed advice such that they sum to the rerandomization of the commitment represented.
+            for (commitment_index, rerandomization) in rerandomizations.iter().enumerate() {
+                advice_blinds[2 * commitment_index] = Blind(*rerandomization - advice_blinds[2 * commitment_index - 1].0);
+            }
+
             let advice_commitments_projective: Vec<_> = advice
                 .iter()
                 .zip(advice_blinds.iter())
